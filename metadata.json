@@ -1,0 +1,5 @@
+{
+  "name": "Cross-Border Profit Calculator",
+  "description": "A comprehensive profit and cost calculator for cross-border e-commerce (Amazon, TikTok) supporting multi-market analysis and bulk CSV import.",
+  "requestFramePermissions": []
+}
