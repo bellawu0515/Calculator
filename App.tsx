@@ -1099,8 +1099,7 @@ const App: React.FC = () => {
                         %
                       </td>
                       <td className="px-6 py-3 text-xs text-slate-400">
-                        {result.volumeCbm.toFixed(4)} CBM × 运价 × 1.05（向上取整
-                        1 位小数）
+                        {result.volumeCbm.toFixed(4)} CBM × 运价
                       </td>
                     </tr>
 

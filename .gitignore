@@ -4,3 +4,4 @@ dist
 .next
 .vercel
 coverage
+.env.local
