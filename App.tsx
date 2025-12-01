@@ -38,8 +38,9 @@ interface CalcInput {
   sku: string;
   salePrice: number;
   adRate: number;
-  cashCycleDays: number;        // 新增：现金周期（天）
+  cashCycleDays: number; // 现金周期（天）
   overrideReturnRate?: number;
+  manualLastMile?: number; // 手动尾程运费（USD）
 }
 
 interface CalcResult {
@@ -53,13 +54,13 @@ interface CalcResult {
   totalCost: number;
   netProfit: number;
   margin: number;
-  capitalEfficiency: number;    // 年资金效率 X
+  capitalEfficiency: number; // 年资金效率 X
   volumeCbm: number;
   chargeWeight: number;
   sizeTier: string;
   currencyUsed: string;
   appliedReturnRate: number;
-  roi: number;                  // 单次周转 ROI Y
+  roi: number; // 单次周转 ROI Y
 }
 
 type DataSourceMode = "history" | "upload";
@@ -94,7 +95,7 @@ const COUNTRY_CONFIGS: CountryConfig[] = [
     platform: "Amazon",
     category: "Sports & Outdoors",
     currency: "USD",
-    referralFeeRate: 0.10,
+    referralFeeRate: 0.1,
     storageOtherRate: 0.01,
     defaultReturnRate: 0.03,
     defaultAffiliateRate: 0,
@@ -121,8 +122,8 @@ const COUNTRY_CONFIGS: CountryConfig[] = [
     referralFeeRate: 0.06,
     storageOtherRate: 0.025,
     defaultReturnRate: 0.05,
-    defaultAffiliateRate: 0.10,
-    lastMileRule: "AMZ_US_FBA", // 共用 AMZ-US 尾程规则
+    defaultAffiliateRate: 0.1,
+    lastMileRule: "AMZ_US_FBA", // 规则仍然保留，用于参考 & 计费重；金额可被手动覆盖
   },
   {
     bizCode: "TK-EU",
@@ -133,7 +134,7 @@ const COUNTRY_CONFIGS: CountryConfig[] = [
     referralFeeRate: 0.09,
     storageOtherRate: 0.025,
     defaultReturnRate: 0.05,
-    defaultAffiliateRate: 0.10,
+    defaultAffiliateRate: 0.1,
     lastMileRule: "AMZ_EU_FBA",
   },
 ];
@@ -164,6 +165,7 @@ function getHeadFreightConfig(bizCode: string): HeadFreightConfig | undefined {
 
 // 解析「新品成本核算.csv」
 function parseProductsFromCsvText(text: string): ProductConfig[] {
+  // 去掉 BOM
   if (text && text.charCodeAt(0) === 0xfeff) {
     text = text.slice(1);
   }
@@ -190,6 +192,7 @@ function parseProductsFromCsvText(text: string): ProductConfig[] {
     const cols = line.split(",").map((c) => c.trim());
     if (cols.length < 9) continue;
 
+    // 长宽高不能为空
     if (!isNumeric(cols[3]) || !isNumeric(cols[4]) || !isNumeric(cols[5])) {
       continue;
     }
@@ -201,16 +204,17 @@ function parseProductsFromCsvText(text: string): ProductConfig[] {
     const widthCm = toNumber(cols[4]);
     const heightCm = toNumber(cols[5]);
 
-    // ✅ 这里改：优先用“单个包装重量/kg”（cols[8]），再退回其他列
+    // 优先用“单个包装重量/kg”（cols[8]），再退回其他列
     let weightKg = 0;
     if (isNumeric(cols[8])) {
-      weightKg = toNumber(cols[8]);          // 单个包装重量/kg
+      weightKg = toNumber(cols[8]); // 单个包装重量/kg
     } else if (isNumeric(cols[7])) {
-      weightKg = toNumber(cols[7]);          // 产品体积重/kg（或备用）
+      weightKg = toNumber(cols[7]); // 产品体积重/kg
     } else if (isNumeric(cols[6])) {
-      weightKg = toNumber(cols[6]);          // 产品重量/kg 作为兜底
+      weightKg = toNumber(cols[6]); // 产品重量/kg
     }
 
+    // 从右往左找带美元符号的采购价
     let purchasePrice = 0;
     for (let j = cols.length - 1; j >= 0; j--) {
       const cell = cols[j];
@@ -236,7 +240,6 @@ function parseProductsFromCsvText(text: string): ProductConfig[] {
 
   return products;
 }
-
 
 // ============================================================================
 // 尾程运费计算（AMZ-US 精确规则 + EU/JP 简化）
@@ -433,7 +436,8 @@ function calculateProfit(
   const { salePrice, adRate } = input;
 
   const volumeCbm =
-    (productCfg.lengthCm * productCfg.widthCm * productCfg.heightCm) / 1000000;
+    (productCfg.lengthCm * productCfg.widthCm * productCfg.heightCm) /
+    1_000_000;
 
   const purchaseCost = productCfg.purchasePrice;
 
@@ -445,8 +449,18 @@ function calculateProfit(
     headFreight = Math.ceil(raw * 10) / 10;
   }
 
+  // 尾程：默认按规则计算，若有手动填写则覆盖金额 & 标记“手动填写”
   const lastMileInfo = calcLastMile(countryCfg.lastMileRule, productCfg);
-  const lastMile = lastMileInfo.cost;
+  let lastMile = lastMileInfo.cost;
+  let sizeTier = lastMileInfo.tier;
+
+  if (
+    typeof input.manualLastMile === "number" &&
+    !Number.isNaN(input.manualLastMile)
+  ) {
+    lastMile = input.manualLastMile;
+    sizeTier = "手动填写";
+  }
 
   const referralFee = salePrice * countryCfg.referralFeeRate;
   const storageOther = salePrice * countryCfg.storageOtherRate;
@@ -468,16 +482,15 @@ function calculateProfit(
   const netProfit = salePrice - totalCost;
   const margin = salePrice > 0 ? netProfit / salePrice : 0;
 
-  // —— 核心：按现金周期算 ROI & 年资金效率 ——
+  // ——核：按现金周期算 ROI & 年资金效率 ——
   const baseCapital = purchaseCost + headFreight;
   const roiPerCycle = baseCapital > 0 ? netProfit / baseCapital : 0; // 预测 ROI（单次周转）
   const cycleDays =
     input.cashCycleDays && input.cashCycleDays > 0
       ? input.cashCycleDays
-      : 90; // 防止除 0，给个默认 90 天
+      : 90; // 防止除 0，默认 90 天
   const cyclesPerYear = 365 / cycleDays;
-  const capitalEfficiency =
-  salePrice > 0 ? (netProfit / salePrice) * cyclesPerYear : 0; // 年资金效率
+  const capitalEfficiency = roiPerCycle * cyclesPerYear; // 年资金效率
 
   return {
     headFreight,
@@ -493,7 +506,7 @@ function calculateProfit(
     capitalEfficiency,
     volumeCbm,
     chargeWeight: lastMileInfo.weight,
-    sizeTier: lastMileInfo.tier,
+    sizeTier,
     currencyUsed: countryCfg.currency,
     appliedReturnRate,
     roi: roiPerCycle,
@@ -506,7 +519,7 @@ function calculateProfit(
 
 function getProductSuggestion(result: CalcResult): ProductSuggestion {
   const X = result.capitalEfficiency; // 年资金效率
-  const Y = result.roi;               // 单次周转 ROI
+  const Y = result.roi; // 单次周转 ROI
 
   if (X >= 1.5 && Y >= 0.4) {
     return {
@@ -554,7 +567,8 @@ const App: React.FC = () => {
   const [adRate, setAdRate] = useState<number>(0.15);
   const [overrideReturnRate, setOverrideReturnRate] = useState<string>("");
 
-  const [cashCycleDays, setCashCycleDays] = useState<number>(90); // 新增：现金周期（天），默认 90 天
+  const [cashCycleDays, setCashCycleDays] = useState<number>(90); // 现金周期（天）
+  const [manualLastMile, setManualLastMile] = useState<string>(""); // TK-US 手动尾程
 
   const [dataSourceMode, setDataSourceMode] =
     useState<DataSourceMode>("upload");
@@ -595,13 +609,19 @@ const App: React.FC = () => {
     ? (currentProduct.lengthCm *
         currentProduct.widthCm *
         currentProduct.heightCm) /
-      1000000
+      1_000_000
     : 0;
 
   const unitsPer40HQ =
     perUnitVolumeCbm > 0 ? Math.ceil(68 / perUnitVolumeCbm) : 0;
 
   const result = useMemo(() => {
+    // TK-US：只要填了数值，就走手动尾程；否则用规则计算
+    const manualLastMileNumber =
+      selectedBizCode === "TK-US" && manualLastMile !== ""
+        ? Number(manualLastMile)
+        : undefined;
+
     if (!selectedSku || productList.length === 0) {
       return calculateProfit(
         {
@@ -625,6 +645,7 @@ const App: React.FC = () => {
         adRate,
         cashCycleDays,
         overrideReturnRate: rRate,
+        manualLastMile: manualLastMileNumber,
       },
       productList
     );
@@ -636,12 +657,10 @@ const App: React.FC = () => {
     overrideReturnRate,
     productList,
     cashCycleDays,
+    manualLastMile,
   ]);
 
-  const suggestion = useMemo(
-    () => getProductSuggestion(result),
-    [result]
-  );
+  const suggestion = useMemo(() => getProductSuggestion(result), [result]);
 
   const loadHistoryData = () => {
     if (typeof window === "undefined") return;
@@ -862,7 +881,7 @@ const App: React.FC = () => {
                           {currentProduct.heightCm}
                         </span>
                       </div>
-                      <div className="flex justify-between">
+                      <div className="flex justify之间">
                         <span>单件体积 (CBM):</span>
                         <span className="font-mono text-slate-700">
                           {perUnitVolumeCbm.toFixed(4)}
@@ -920,6 +939,25 @@ const App: React.FC = () => {
                     </span>
                   </div>
                 </div>
+
+                {/* TK-US 专用：手动尾程派送费 */}
+                {selectedBizCode === "TK-US" && (
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 mb-1">
+                      尾程派送费 (USD，手动)
+                    </label>
+                    <input
+                      type="number"
+                      value={manualLastMile}
+                      onChange={(e) => setManualLastMile(e.target.value)}
+                      className="w-full p-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+                    />
+                    <p className="mt-1 text-[11px] text-slate-400">
+                      TikTok-US 采用第三方尾程；此处金额会覆盖系统根据
+                      AMZ_US_FBA 计算的尾程运费。
+                    </p>
+                  </div>
+                )}
 
                 <div>
                   <label className="block text-xs font-medium text-slate-600 mb-1">
@@ -1122,7 +1160,9 @@ const App: React.FC = () => {
                         %
                       </td>
                       <td className="px-6 py-3 text-xs text-slate-400">
-                        规则：{currentCountry.lastMileRule}
+                        {result.sizeTier === "手动填写"
+                          ? "TK-US 手动输入尾程费用"
+                          : `规则：${currentCountry.lastMileRule}`}
                       </td>
                     </tr>
 
@@ -1206,11 +1246,11 @@ const App: React.FC = () => {
                         %
                       </td>
                       <td className="px-6 py-3 text-xs text-slate-400">
-                        按退货率{" "}
-                        {(result.appliedReturnRate * 100).toFixed(1)}%
+                        按退货率 {(result.appliedReturnRate * 100).toFixed(1)}%
                       </td>
                     </tr>
 
+                    {/* 总成本 */}
                     <tr className="bg-slate-50 font-bold">
                       <td className="px-6 py-3 text-slate-900">总成本</td>
                       <td className="px-6 py-3 text-slate-900">
@@ -1225,14 +1265,31 @@ const App: React.FC = () => {
                           : "0.0"}
                         %
                       </td>
-                      <td className="px-6 py-3"></td>
+                      <td className="px-6 py-3" />
+                    </tr>
+
+                    {/* 净利润 */}
+                    <tr className="bg-emerald-50 font-bold">
+                      <td className="px-6 py-3 text-slate-900">净利润</td>
+                      <td className="px-6 py-3 text-slate-900">
+                        ${result.netProfit.toFixed(2)}
+                      </td>
+                      <td className="px-6 py-3 text-slate-900">
+                        {salePrice
+                          ? ((result.netProfit / salePrice) * 100).toFixed(1)
+                          : "0.0"}
+                        %
+                      </td>
+                      <td className="px-6 py-3 text-xs text-slate-500">
+                        净利润 = 售价 - 总成本
+                      </td>
                     </tr>
                   </tbody>
                 </table>
               </div>
             </div>
 
-            {/* 可以在这里加导出 CSV 等操作 */}
+            {/* 后面可以再加导出 / 截图功能 */}
           </div>
         </div>
       </div>
@@ -1241,4 +1298,3 @@ const App: React.FC = () => {
 };
 
 export default App;
-
