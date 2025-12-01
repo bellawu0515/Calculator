@@ -476,7 +476,8 @@ function calculateProfit(
       ? input.cashCycleDays
       : 90; // 防止除 0，给个默认 90 天
   const cyclesPerYear = 365 / cycleDays;
-  const capitalEfficiency = roiPerCycle * cyclesPerYear; // 年资金效率
+  const capitalEfficiency =
+  salePrice > 0 ? (netProfit / salePrice) * cyclesPerYear : 0; // 年资金效率
 
   return {
     headFreight,
