@@ -744,7 +744,7 @@ const App: React.FC = () => {
               PC
             </div>
             <h1 className="text-xl font-bold text-slate-900 tracking-tight">
-              新品成本利润测算 2.1
+              新品成本利润测算 2.2
             </h1>
           </div>
           <div className="text-xs text-slate-500 hidden sm:block">
