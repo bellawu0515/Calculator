@@ -188,7 +188,7 @@ function parseProductsFromCsvText(text: string): ProductConfig[] {
 
   for (const line of lines) {
     const cols = line.split(",").map((c) => c.trim());
-    if (cols.length < 8) continue;
+    if (cols.length < 9) continue;
 
     if (!isNumeric(cols[3]) || !isNumeric(cols[4]) || !isNumeric(cols[5])) {
       continue;
@@ -201,11 +201,14 @@ function parseProductsFromCsvText(text: string): ProductConfig[] {
     const widthCm = toNumber(cols[4]);
     const heightCm = toNumber(cols[5]);
 
+    // ✅ 这里改：优先用“单个包装重量/kg”（cols[8]），再退回其他列
     let weightKg = 0;
-    if (isNumeric(cols[7])) {
-      weightKg = toNumber(cols[7]);
+    if (isNumeric(cols[8])) {
+      weightKg = toNumber(cols[8]);          // 单个包装重量/kg
+    } else if (isNumeric(cols[7])) {
+      weightKg = toNumber(cols[7]);          // 产品体积重/kg（或备用）
     } else if (isNumeric(cols[6])) {
-      weightKg = toNumber(cols[6]);
+      weightKg = toNumber(cols[6]);          // 产品重量/kg 作为兜底
     }
 
     let purchasePrice = 0;
@@ -233,6 +236,7 @@ function parseProductsFromCsvText(text: string): ProductConfig[] {
 
   return products;
 }
+
 
 // ============================================================================
 // 尾程运费计算（AMZ-US 精确规则 + EU/JP 简化）
