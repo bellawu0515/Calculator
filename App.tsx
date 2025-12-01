@@ -40,7 +40,7 @@ interface CalcInput {
   adRate: number;
   cashCycleDays: number; // 现金周期（天）
   overrideReturnRate?: number;
-  manualLastMile?: number; // 手动尾程运费（USD）
+  manualLastMile?: number; // TK-US 手工填写尾程费（USD/件）
 }
 
 interface CalcResult {
@@ -123,7 +123,7 @@ const COUNTRY_CONFIGS: CountryConfig[] = [
     storageOtherRate: 0.025,
     defaultReturnRate: 0.05,
     defaultAffiliateRate: 0.1,
-    lastMileRule: "AMZ_US_FBA", // 规则仍然保留，用于参考 & 计费重；金额可被手动覆盖
+    lastMileRule: "AMZ_US_FBA", // 共用 AMZ-US 的尺寸逻辑，但费用由人工填写覆盖
   },
   {
     bizCode: "TK-EU",
@@ -165,7 +165,7 @@ function getHeadFreightConfig(bizCode: string): HeadFreightConfig | undefined {
 
 // 解析「新品成本核算.csv」
 function parseProductsFromCsvText(text: string): ProductConfig[] {
-  // 去掉 BOM
+  // 去掉 UTF-8 BOM
   if (text && text.charCodeAt(0) === 0xfeff) {
     text = text.slice(1);
   }
@@ -192,7 +192,7 @@ function parseProductsFromCsvText(text: string): ProductConfig[] {
     const cols = line.split(",").map((c) => c.trim());
     if (cols.length < 9) continue;
 
-    // 长宽高不能为空
+    // 长宽高列必须是数值
     if (!isNumeric(cols[3]) || !isNumeric(cols[4]) || !isNumeric(cols[5])) {
       continue;
     }
@@ -204,7 +204,7 @@ function parseProductsFromCsvText(text: string): ProductConfig[] {
     const widthCm = toNumber(cols[4]);
     const heightCm = toNumber(cols[5]);
 
-    // 优先用“单个包装重量/kg”（cols[8]），再退回其他列
+    // ✅ 优先用「单个包装重量/kg」（第 9 列），再退回体积重、产品重量
     let weightKg = 0;
     if (isNumeric(cols[8])) {
       weightKg = toNumber(cols[8]); // 单个包装重量/kg
@@ -214,7 +214,7 @@ function parseProductsFromCsvText(text: string): ProductConfig[] {
       weightKg = toNumber(cols[6]); // 产品重量/kg
     }
 
-    // 从右往左找带美元符号的采购价
+    // 采购价：从最后一列往前找第一个带 $ 的单元格
     let purchasePrice = 0;
     for (let j = cols.length - 1; j >= 0; j--) {
       const cell = cols[j];
@@ -313,7 +313,7 @@ function calcLastMileUS_Exact(
     else if (lb <= 2.75) costUsd = 6.21;
     else if (lb <= 3) costUsd = 6.62;
     else {
-      const extraBlocks = Math.max(Math.ceil((lb - 3) * 4), 0);
+      const extraBlocks = Math.max(Math.ceil((lb - 3) * 4), 0); // 0.25lb 为一个 block
       costUsd = 6.92 + extraBlocks * 0.08;
     }
   } else if (tier === "大号大件") {
@@ -436,8 +436,7 @@ function calculateProfit(
   const { salePrice, adRate } = input;
 
   const volumeCbm =
-    (productCfg.lengthCm * productCfg.widthCm * productCfg.heightCm) /
-    1_000_000;
+    (productCfg.lengthCm * productCfg.widthCm * productCfg.heightCm) / 1_000_000;
 
   const purchaseCost = productCfg.purchasePrice;
 
@@ -449,18 +448,25 @@ function calculateProfit(
     headFreight = Math.ceil(raw * 10) / 10;
   }
 
-  // 尾程：默认按规则计算，若有手动填写则覆盖金额 & 标记“手动填写”
-  const lastMileInfo = calcLastMile(countryCfg.lastMileRule, productCfg);
-  let lastMile = lastMileInfo.cost;
-  let sizeTier = lastMileInfo.tier;
-
-  if (
+  // 尾程：
+  // TK-US 支持人工输入尾程费，其余按规则自动计算
+  let lastMileInfo: { cost: number; tier: string; weight: number };
+  const hasManualLastMile =
+    input.bizCode === "TK-US" &&
     typeof input.manualLastMile === "number" &&
-    !Number.isNaN(input.manualLastMile)
-  ) {
-    lastMile = input.manualLastMile;
-    sizeTier = "手动填写";
+    !Number.isNaN(input.manualLastMile);
+
+  if (hasManualLastMile) {
+    lastMileInfo = {
+      cost: input.manualLastMile as number,
+      tier: "人工填写",
+      weight: productCfg.weightKg,
+    };
+  } else {
+    lastMileInfo = calcLastMile(countryCfg.lastMileRule, productCfg);
   }
+
+  const lastMile = lastMileInfo.cost;
 
   const referralFee = salePrice * countryCfg.referralFeeRate;
   const storageOther = salePrice * countryCfg.storageOtherRate;
@@ -482,13 +488,13 @@ function calculateProfit(
   const netProfit = salePrice - totalCost;
   const margin = salePrice > 0 ? netProfit / salePrice : 0;
 
-  // ——核：按现金周期算 ROI & 年资金效率 ——
+  // —— 核心：按现金周期算 ROI & 年资金效率 ——
   const baseCapital = purchaseCost + headFreight;
   const roiPerCycle = baseCapital > 0 ? netProfit / baseCapital : 0; // 预测 ROI（单次周转）
   const cycleDays =
     input.cashCycleDays && input.cashCycleDays > 0
       ? input.cashCycleDays
-      : 90; // 防止除 0，默认 90 天
+      : 90; // 防止除 0，给个默认 90 天
   const cyclesPerYear = 365 / cycleDays;
   const capitalEfficiency = roiPerCycle * cyclesPerYear; // 年资金效率
 
@@ -506,7 +512,7 @@ function calculateProfit(
     capitalEfficiency,
     volumeCbm,
     chargeWeight: lastMileInfo.weight,
-    sizeTier,
+    sizeTier: lastMileInfo.tier,
     currencyUsed: countryCfg.currency,
     appliedReturnRate,
     roi: roiPerCycle,
@@ -566,9 +572,9 @@ const App: React.FC = () => {
   const [salePrice, setSalePrice] = useState<number>(39.99);
   const [adRate, setAdRate] = useState<number>(0.15);
   const [overrideReturnRate, setOverrideReturnRate] = useState<string>("");
+  const [manualLastMile, setManualLastMile] = useState<string>(""); // TK-US 手动尾程费
 
   const [cashCycleDays, setCashCycleDays] = useState<number>(90); // 现金周期（天）
-  const [manualLastMile, setManualLastMile] = useState<string>(""); // TK-US 手动尾程
 
   const [dataSourceMode, setDataSourceMode] =
     useState<DataSourceMode>("upload");
@@ -616,12 +622,6 @@ const App: React.FC = () => {
     perUnitVolumeCbm > 0 ? Math.ceil(68 / perUnitVolumeCbm) : 0;
 
   const result = useMemo(() => {
-    // TK-US：只要填了数值，就走手动尾程；否则用规则计算
-    const manualLastMileNumber =
-      selectedBizCode === "TK-US" && manualLastMile !== ""
-        ? Number(manualLastMile)
-        : undefined;
-
     if (!selectedSku || productList.length === 0) {
       return calculateProfit(
         {
@@ -637,6 +637,12 @@ const App: React.FC = () => {
     const rRate = overrideReturnRate
       ? parseFloat(overrideReturnRate) / 100
       : undefined;
+
+    const manualLastMileValue =
+      selectedBizCode === "TK-US" && manualLastMile.trim() !== ""
+        ? Number(manualLastMile)
+        : undefined;
+
     return calculateProfit(
       {
         bizCode: selectedBizCode,
@@ -645,7 +651,7 @@ const App: React.FC = () => {
         adRate,
         cashCycleDays,
         overrideReturnRate: rRate,
-        manualLastMile: manualLastMileNumber,
+        manualLastMile: manualLastMileValue,
       },
       productList
     );
@@ -726,6 +732,8 @@ const App: React.FC = () => {
     );
   }
 
+  const isTkUs = selectedBizCode === "TK-US";
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans pb-10">
       {/* 顶部导航 */}
@@ -740,7 +748,7 @@ const App: React.FC = () => {
             </h1>
           </div>
           <div className="text-xs text-slate-500 hidden sm:block">
-            数据源：新品成本核算.csv | 年资金效率 = 单次 ROI × (365 / 现金周期天数)
+            数据源：新品成本核算.csv ｜ 年资金效率 = 单次 ROI × (365 / 现金周期天数)
           </div>
         </div>
       </div>
@@ -825,7 +833,7 @@ const App: React.FC = () => {
                   ② 测算参数
                 </div>
                 <div className="text-[11px] text-slate-500">
-                  业务代码 / SKU / 售价 / 广告 / 现金周期
+                  业务代码 / SKU / 售价 / 广告 / 现金周期 / 尾程
                 </div>
               </div>
               <div className="p-4 space-y-4">
@@ -881,7 +889,7 @@ const App: React.FC = () => {
                           {currentProduct.heightCm}
                         </span>
                       </div>
-                      <div className="flex justify之间">
+                      <div className="flex justify-between">
                         <span>单件体积 (CBM):</span>
                         <span className="font-mono text-slate-700">
                           {perUnitVolumeCbm.toFixed(4)}
@@ -889,7 +897,7 @@ const App: React.FC = () => {
                       </div>
                       <div className="flex justify-between">
                         <span>40HQ 装柜数量 (估):</span>
-                        <span className="font-mono text-slate-700">
+                        <span className="font-mono text-slate-700 text-right w-16">
                           {unitsPer40HQ > 0 ? unitsPer40HQ : "-"}
                         </span>
                       </div>
@@ -940,21 +948,21 @@ const App: React.FC = () => {
                   </div>
                 </div>
 
-                {/* TK-US 专用：手动尾程派送费 */}
-                {selectedBizCode === "TK-US" && (
+                {isTkUs && (
                   <div>
                     <label className="block text-xs font-medium text-slate-600 mb-1">
-                      尾程派送费 (USD，手动)
+                      TK-US 尾程派送费 (USD / 件)
                     </label>
                     <input
                       type="number"
                       value={manualLastMile}
                       onChange={(e) => setManualLastMile(e.target.value)}
+                      placeholder="例如：12.58"
                       className="w-full p-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
                     />
                     <p className="mt-1 text-[11px] text-slate-400">
-                      TikTok-US 采用第三方尾程；此处金额会覆盖系统根据
-                      AMZ_US_FBA 计算的尾程运费。
+                      TikTok US 尾程费由你根据实际报价手工填写，系统不再按 AMZ
+                      规则自动计算金额。
                     </p>
                   </div>
                 )}
@@ -1003,6 +1011,7 @@ const App: React.FC = () => {
           <div className="lg:col-span-8 space-y-6">
             {/* KPI 卡片 */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {/* 净利润 + 净利润率 同一张卡片 */}
               <div
                 className={`p-4 rounded-xl border shadow-sm ${
                   result.netProfit >= 0
@@ -1010,8 +1019,22 @@ const App: React.FC = () => {
                     : "bg-red-50 border-red-100"
                 }`}
               >
-                <div className="text-xs text-slate-500 mb-1">
-                  单件净利润 (USD)
+                <div className="flex items-baseline justify-between mb-1">
+                  <div className="text-xs text-slate-500">
+                    单件净利润 (USD)
+                  </div>
+                  <div className="text-xs text-slate-500 text-right">
+                    净利润率：
+                    <span
+                      className={
+                        result.margin >= 0
+                          ? "text-emerald-700 font-semibold ml-1"
+                          : "text-red-700 font-semibold ml-1"
+                      }
+                    >
+                      {(result.margin * 100).toFixed(1)}%
+                    </span>
+                  </div>
                 </div>
                 <div
                   className={`text-3xl font-bold ${
@@ -1160,9 +1183,10 @@ const App: React.FC = () => {
                         %
                       </td>
                       <td className="px-6 py-3 text-xs text-slate-400">
-                        {result.sizeTier === "手动填写"
-                          ? "TK-US 手动输入尾程费用"
-                          : `规则：${currentCountry.lastMileRule}`}
+                        规则：
+                        {isTkUs
+                          ? "人工填写（TikTok US）"
+                          : currentCountry.lastMileRule}
                       </td>
                     </tr>
 
@@ -1180,10 +1204,8 @@ const App: React.FC = () => {
                         %
                       </td>
                       <td className="px-6 py-3 text-xs text-slate-400">
-                        佣金率：{(currentCountry.referralFeeRate * 100).toFixed(
-                          1
-                        )}
-                        %
+                        佣金率：
+                        {(currentCountry.referralFeeRate * 100).toFixed(1)}%
                       </td>
                     </tr>
 
@@ -1204,10 +1226,8 @@ const App: React.FC = () => {
                         %
                       </td>
                       <td className="px-6 py-3 text-xs text-slate-400">
-                        杂费率：{(currentCountry.storageOtherRate * 100).toFixed(
-                          1
-                        )}
-                        %
+                        杂费率：
+                        {(currentCountry.storageOtherRate * 100).toFixed(1)}%
                       </td>
                     </tr>
 
@@ -1246,11 +1266,11 @@ const App: React.FC = () => {
                         %
                       </td>
                       <td className="px-6 py-3 text-xs text-slate-400">
-                        按退货率 {(result.appliedReturnRate * 100).toFixed(1)}%
+                        按退货率{" "}
+                        {(result.appliedReturnRate * 100).toFixed(1)}%
                       </td>
                     </tr>
 
-                    {/* 总成本 */}
                     <tr className="bg-slate-50 font-bold">
                       <td className="px-6 py-3 text-slate-900">总成本</td>
                       <td className="px-6 py-3 text-slate-900">
@@ -1267,29 +1287,12 @@ const App: React.FC = () => {
                       </td>
                       <td className="px-6 py-3" />
                     </tr>
-
-                    {/* 净利润 */}
-                    <tr className="bg-emerald-50 font-bold">
-                      <td className="px-6 py-3 text-slate-900">净利润</td>
-                      <td className="px-6 py-3 text-slate-900">
-                        ${result.netProfit.toFixed(2)}
-                      </td>
-                      <td className="px-6 py-3 text-slate-900">
-                        {salePrice
-                          ? ((result.netProfit / salePrice) * 100).toFixed(1)
-                          : "0.0"}
-                        %
-                      </td>
-                      <td className="px-6 py-3 text-xs text-slate-500">
-                        净利润 = 售价 - 总成本
-                      </td>
-                    </tr>
                   </tbody>
                 </table>
               </div>
             </div>
 
-            {/* 后面可以再加导出 / 截图功能 */}
+            {/* 可以在这里加导出 CSV 等操作 */}
           </div>
         </div>
       </div>
