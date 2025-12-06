@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect, ChangeEvent } from "react";
 
 // ============================================================================
-// 类型定义
+// 类型定义：成本测算相关
 // ============================================================================
 
 interface CountryConfig {
@@ -72,18 +72,52 @@ interface ProductSuggestion {
   badgeClass: string;
 }
 
-// AI 选品模块相关类型
+// ============================================================================
+// 类型定义：AI 选品报告相关
+// ============================================================================
+
 interface AiSummary {
   opportunityScore: number;
   competitionScore: number;
-  profitPotential: "低" | "中" | "高";
-  riskLevel: "低" | "中" | "高";
+  profitPotential: string; // "低" | "中" | "高"
+  riskLevel: string; // "低" | "中" | "高"
 }
+
+interface AiCandidate {
+  rank: number;
+  id: string; // ASIN 或关键词
+  title: string;
+  type: "ASIN" | "Keyword";
+  price: number | null;
+  monthlySales: number | null;
+  revenue: number | null;
+  reviews: number | null;
+  rating: number | null;
+  level: "A" | "B" | "C" | "D";
+  tag: string;
+  action: string;
+}
+
+type AiModules = Record<string, string>;
 
 interface AiResult {
   summary: AiSummary;
-  tableMarkdown: string;
+  decisionLabel: string;
+  decisionReason: string;
+  candidates: AiCandidate[];
+  modules: AiModules;
   fullReportMarkdown: string;
+}
+
+interface AiTocItem {
+  key: string; // 如 "1.1"
+  title: string;
+}
+
+interface AiTocGroup {
+  groupKey: string;
+  groupTitle: string;
+  items: AiTocItem[];
 }
 
 // ============================================================================
@@ -166,6 +200,95 @@ const RATE_JPY_TO_USD = 0.0064;
 const HISTORY_KEY = "profitCalc_products_csv";
 
 // ============================================================================
+// AI 报告目录常量（模仿卖家穿海）
+// ============================================================================
+
+const AI_REPORT_TOC: AiTocGroup[] = [
+  {
+    groupKey: "1",
+    groupTitle: "一：产品分析",
+    items: [
+      { key: "1.1", title: "Listing 概览" },
+      { key: "1.2", title: "产品成绩" },
+      { key: "1.3", title: "产品关键节点" },
+      { key: "1.4", title: "评论真实性" },
+      { key: "1.5", title: "库存管理能力" },
+      { key: "1.6", title: "模块总结" },
+    ],
+  },
+  {
+    groupKey: "2",
+    groupTitle: "二：利润分析",
+    items: [
+      { key: "2.1", title: "价格销量图" },
+      { key: "2.2", title: "利润试算" },
+      { key: "2.3", title: "盈亏平衡" },
+    ],
+  },
+  {
+    groupKey: "3",
+    groupTitle: "三：市场分析",
+    items: [
+      { key: "3.1", title: "概况" },
+      { key: "3.2", title: "销量趋势" },
+      { key: "3.3", title: "TOP1 ASIN 销售趋势" },
+      { key: "3.4", title: "TOP1 ASIN 年度对比" },
+      { key: "3.5", title: "Google Trends" },
+      { key: "3.6", title: "关键词搜索趋势" },
+      { key: "3.7", title: "关键词竞争" },
+      { key: "3.8", title: "差断分析" },
+      { key: "3.9", title: "新品成功率" },
+      { key: "3.10", title: "卖家实力分析" },
+      { key: "3.11", title: "模块总结" },
+    ],
+  },
+  {
+    groupKey: "4",
+    groupTitle: "四：竞品分析",
+    items: [
+      { key: "4.1", title: "竞品卖点分析" },
+      { key: "4.2", title: "竞品运营策略" },
+      { key: "4.3", title: "竞品关键词" },
+      { key: "4.4", title: "买家购买偏好" },
+      { key: "4.5", title: "竞品卖家" },
+      { key: "4.6", title: "竞品利润试算" },
+      { key: "4.7", title: "模块总结" },
+    ],
+  },
+  {
+    groupKey: "5",
+    groupTitle: "五：评论分析",
+    items: [
+      { key: "5.1", title: "消费者画像" },
+      { key: "5.2", title: "使用场景" },
+      { key: "5.3", title: "产品体验" },
+      { key: "5.4", title: "购买动机" },
+      { key: "5.5", title: "未满足的需求" },
+    ],
+  },
+  {
+    groupKey: "6",
+    groupTitle: "六：产品切入点",
+    items: [
+      { key: "6.1", title: "变体销量分析" },
+      { key: "6.2", title: "差异化方案" },
+      { key: "6.3", title: "新品 ASIN 成功经验" },
+      { key: "6.4", title: "模块总结" },
+    ],
+  },
+  {
+    groupKey: "7",
+    groupTitle: "七：货源推荐",
+    items: [{ key: "7.1", title: "供应链与货源建议" }],
+  },
+  {
+    groupKey: "8",
+    groupTitle: "八：合规检测",
+    items: [{ key: "8.1", title: "合规风险与注意事项" }],
+  },
+];
+
+// ============================================================================
 // 工具函数：配置 & CSV 解析
 // ============================================================================
 
@@ -218,14 +341,14 @@ function parseProductsFromCsvText(text: string): ProductConfig[] {
     const widthCm = toNumber(cols[4]);
     const heightCm = toNumber(cols[5]);
 
-    // ✅ 优先用「单个包装重量/kg」（第 9 列），再退回体积重、产品重量
+    // 优先用「单个包装重量/kg」（第 9 列），再退回体积重、产品重量
     let weightKg = 0;
     if (isNumeric(cols[8])) {
-      weightKg = toNumber(cols[8]); // 单个包装重量/kg
+      weightKg = toNumber(cols[8]);
     } else if (isNumeric(cols[7])) {
-      weightKg = toNumber(cols[7]); // 产品体积重/kg
+      weightKg = toNumber(cols[7]);
     } else if (isNumeric(cols[6])) {
-      weightKg = toNumber(cols[6]); // 产品重量/kg
+      weightKg = toNumber(cols[6]);
     }
 
     // 采购价：从最后一列往前找第一个带 $ 的单元格
@@ -574,191 +697,10 @@ function getProductSuggestion(result: CalcResult): ProductSuggestion {
 }
 
 // ============================================================================
-// AI 选品模块（V0：上传 CSV -> 调用 /api/ai-product-research）
+// 组件：成本利润测算（原来的主页面）
 // ============================================================================
 
-const AiProductResearch: React.FC = () => {
-  const [file, setFile] = useState<File | null>(null);
-  const [note, setNote] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<AiResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
-    if (f) {
-      setFile(f);
-      setResult(null);
-      setError(null);
-    }
-  };
-
-  const handleSubmit = async () => {
-    if (!file) {
-      setError("请先上传从卖家精灵 / Helium10 导出的 CSV 报表。");
-      return;
-    }
-    setError(null);
-    setResult(null);
-    setLoading(true);
-
-    try {
-      const formData = new FormData();
-      formData.append("file", file);
-      formData.append("note", note);
-
-      const res = await fetch("/api/ai-product-research", {
-        method: "POST",
-        body: formData,
-      });
-
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(text || "AI 分析失败");
-      }
-
-      const data = (await res.json()) as AiResult;
-      setResult(data);
-    } catch (err: any) {
-      setError(err.message || "请求失败");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const renderMarkdown = (md: string) => {
-    return (
-      <pre className="whitespace-pre-wrap text-sm font-mono bg-slate-50 p-3 rounded-lg border">
-        {md}
-      </pre>
-    );
-  };
-
-  return (
-    <div className="space-y-4">
-      <h2 className="text-lg font-semibold">AI 选品中心（CSV 报表版 V0）</h2>
-
-      <div className="grid gap-4 md:grid-cols-[320px,1fr]">
-        {/* 左侧：上传区 */}
-        <section className="space-y-3 border rounded-xl bg-white p-4 shadow-sm">
-          <div className="space-y-1">
-            <div className="text-sm font-medium text-slate-800">
-              1. 上传数据报表
-            </div>
-            <input
-              type="file"
-              accept=".csv,.xlsx"
-              onChange={handleFileChange}
-              className="text-sm"
-            />
-            <p className="text-xs text-slate-500">
-              建议使用卖家精灵 / Helium10 导出 CSV，包含 ASIN、标题、价格、月销量、
-              销售额、评论数、评分、搜索量等字段。
-            </p>
-          </div>
-
-          <div className="space-y-1">
-            <div className="text-sm font-medium text-slate-800">
-              2. 场景备注（可选）
-            </div>
-            <textarea
-              className="border rounded-md px-2 py-1 text-sm w-full h-16"
-              placeholder="例如：无线战绳 · Amazon US · 最近30天数据"
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-            />
-            <p className="text-xs text-slate-400">
-              会一并发送给 AI，帮助更贴近你的选品思路（比如：只看客单 50-80 美金段）。
-            </p>
-          </div>
-
-          <button
-            onClick={handleSubmit}
-            disabled={loading || !file}
-            className="w-full rounded-md bg-slate-900 text-white text-sm py-2 disabled:opacity-60"
-          >
-            {loading ? "AI 正在分析…" : "生成 AI 选品报告"}
-          </button>
-
-          {error && (
-            <p className="text-xs text-red-500 whitespace-pre-wrap">{error}</p>
-          )}
-
-          {!error && !result && !loading && (
-            <p className="text-xs text-slate-500">
-              小提示：可以从你最近在看的类目导出一份报表先试，比如：battle rope、引体向上、深蹲机等。
-            </p>
-          )}
-        </section>
-
-        {/* 右侧：结果区 */}
-        <section className="space-y-4">
-          {!result && !loading && (
-            <div className="text-sm text-slate-500">
-              👉 先在卖家精灵 / Helium10 导出报表，然后上传 CSV，点击「生成 AI
-              选品报告」。<br />
-              我会基于报表做：市场需求、竞争、利润空间、差评痛点与策略建议，并给出
-              A/B/C/D 等级。
-            </div>
-          )}
-
-          {loading && (
-            <div className="text-sm text-slate-600">AI 正在分析，请稍等…</div>
-          )}
-
-          {result && (
-            <>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-                <div className="border rounded-lg p-3 bg-white">
-                  <div className="text-xs text-slate-500">市场机会评分</div>
-                  <div className="text-xl font-semibold">
-                    {result.summary.opportunityScore}/100
-                  </div>
-                </div>
-                <div className="border rounded-lg p-3 bg-white">
-                  <div className="text-xs text-slate-500">竞争强度</div>
-                  <div className="text-xl font-semibold">
-                    {result.summary.competitionScore}/100
-                  </div>
-                </div>
-                <div className="border rounded-lg p-3 bg-white">
-                  <div className="text-xs text-slate-500">利润潜力</div>
-                  <div className="text-xl font-semibold">
-                    {result.summary.profitPotential}
-                  </div>
-                </div>
-                <div className="border rounded-lg p-3 bg-white">
-                  <div className="text-xs text-slate-500">整体风险</div>
-                  <div className="text-xl font-semibold">
-                    {result.summary.riskLevel}
-                  </div>
-                </div>
-              </div>
-
-              <div>
-                <h3 className="text-sm font-medium mb-1">
-                  核心 ASIN / 关键词列表（AI 提炼）
-                </h3>
-                {renderMarkdown(result.tableMarkdown)}
-              </div>
-
-              <div>
-                <h3 className="text-sm font-medium mb-1">详细 AI 报告</h3>
-                {renderMarkdown(result.fullReportMarkdown)}
-              </div>
-            </>
-          )}
-        </section>
-      </div>
-    </div>
-  );
-};
-
-// ============================================================================
-// React 组件：总入口（顶部 Tab 切换：成本核算 / AI 选品）
-// ============================================================================
-
-const App: React.FC = () => {
+const ProfitCalculator: React.FC = () => {
   const [productList, setProductList] = useState<ProductConfig[]>([]);
   const [selectedBizCode, setSelectedBizCode] = useState<string>(
     COUNTRY_CONFIGS[0].bizCode
@@ -774,8 +716,6 @@ const App: React.FC = () => {
   const [dataSourceMode, setDataSourceMode] =
     useState<DataSourceMode>("upload");
   const [hasHistory, setHasHistory] = useState<boolean>(false);
-
-  const [activeTab, setActiveTab] = useState<"cost" | "ai">("cost");
 
   // 初始化：尝试加载历史 CSV
   useEffect(() => {
@@ -932,616 +872,1003 @@ const App: React.FC = () => {
   const isTkUs = selectedBizCode === "TK-US";
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans pb-10">
-      {/* 顶部导航：站点标题 + Tab 切换 */}
-      <div className="bg-white border-b border-slate-200 sticky top-0 z-20 shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="bg-slate-900 text-white px-2 py-1 rounded-lg text-xs font-bold">
-              ND
+    <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+      {/* 左侧：上传 & 参数 */}
+      <div className="lg:col-span-4 lg:sticky lg:top-24 h-fit space-y-6">
+        {/* 上传 & 数据源选择 */}
+        <div className="bg-white rounded-xl shadow-sm border border-slate-200">
+          <div className="px-4 py-3 border-b border-slate-100 bg-slate-50">
+            <div className="text-sm font-semibold text-slate-800">
+              ① 数据源 & 上传
             </div>
-            <div>
-              <div className="text-[11px] text-slate-500 uppercase tracking-[0.16em]">
-                neurodesktech 内部工具
-              </div>
-              <div className="text-sm font-semibold text-slate-900">
-                {activeTab === "cost"
-                  ? "新品成本利润测算 2.2"
-                  : "AI 选品中心 · 报表版 V0"}
-              </div>
+            <div className="text-xs text-slate-500 mt-1">
+              可以用上一次导入的历史数据，或者上传新的 CSV 覆盖。
             </div>
           </div>
+          <div className="p-4 space-y-4">
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">
+                数据来源
+              </label>
+              <select
+                value={dataSourceMode}
+                onChange={(e) =>
+                  handleDataSourceModeChange(e.target.value as DataSourceMode)
+                }
+                className="w-full p-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-white"
+              >
+                <option value="history" disabled={!hasHistory}>
+                  我没有 Excel，用历史数据
+                  {!hasHistory ? "（暂无历史）" : ""}
+                </option>
+                <option value="upload">上传新的 CSV 文件（覆盖）</option>
+              </select>
+              {dataSourceMode === "history" && (
+                <p className="mt-1 text-[11px] text-slate-500">
+                  当前模式：使用最近一次上传的「新品成本核算.csv」。
+                </p>
+              )}
+            </div>
 
-          <div className="flex items-center gap-6">
-            <nav className="flex gap-2 text-sm">
-              <button
-                onClick={() => setActiveTab("cost")}
-                className={`px-3 py-1.5 rounded-full border text-xs sm:text-sm transition ${
-                  activeTab === "cost"
-                    ? "bg-slate-900 text-white border-slate-900"
-                    : "bg-white text-slate-600 border-slate-200 hover:bg-slate-100"
-                }`}
+            {dataSourceMode === "upload" && (
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">
+                  选择 CSV 文件
+                </label>
+                <input
+                  type="file"
+                  accept=".csv"
+                  onChange={handleUploadCsv}
+                  className="block w-full text-xs text-slate-600"
+                />
+                <p className="mt-1 text-[11px] text-slate-400">
+                  请从 Excel 将「新品成本核算」导出为 CSV 再上传，上传将覆盖历史数据。
+                </p>
+              </div>
+            )}
+
+            <div className="text-xs text-slate-500">
+              当前已导入产品数：{" "}
+              <span className="font-mono font-semibold">
+                {productList.length}
+              </span>
+            </div>
+
+            {productList.length > 0 && (
+              <div className="text-xs text-emerald-600 bg-emerald-50 border border-emerald-100 rounded p-2">
+                已读取：SKU、包装尺寸、包装毛重、美元采购价，可直接用于测算。
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* 参数输入 */}
+        <div className="bg-white rounded-xl shadow-sm border border-slate-200">
+          <div className="px-4 py-3 border-b border-slate-100 bg-blue-50 flex items-center justify-between">
+            <div className="text-sm font-semibold text-slate-800">
+              ② 测算参数
+            </div>
+            <div className="text-[11px] text-slate-500">
+              业务代码 / SKU / 售价 / 广告 / 现金周期 / 尾程
+            </div>
+          </div>
+          <div className="p-4 space-y-4">
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">
+                业务代码 (国家/平台)
+              </label>
+              <select
+                value={selectedBizCode}
+                onChange={(e) => setSelectedBizCode(e.target.value)}
+                className="w-full p-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-white"
               >
-                成本核算
-              </button>
-              <button
-                onClick={() => setActiveTab("ai")}
-                className={`px-3 py-1.5 rounded-full border text-xs sm:text-sm transition ${
-                  activeTab === "ai"
-                    ? "bg-slate-900 text-white border-slate-900"
-                    : "bg-white text-slate-600 border-slate-200 hover:bg-slate-100"
-                }`}
+                {COUNTRY_CONFIGS.map((cfg) => (
+                  <option key={cfg.bizCode} value={cfg.bizCode}>
+                    {cfg.bizCode} ({cfg.country} - {cfg.platform})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">
+                新品 SKU / 品名
+              </label>
+              <select
+                value={selectedSku}
+                onChange={(e) => setSelectedSku(e.target.value)}
+                disabled={productList.length === 0}
+                className="w-full p-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-white disabled:bg-slate-100 disabled:text-slate-400"
               >
-                AI 选品中心
-              </button>
-            </nav>
-            <div className="hidden md:block text-[11px] text-slate-500">
-              {activeTab === "cost"
-                ? "数据源：新品成本核算.csv ｜ 年资金效率 = 单次 ROI × (365 / 现金周期天数)"
-                : "上传卖家精灵 / Helium10 报表，自动生成市场及竞品分析"}
+                {productList.length === 0 && (
+                  <option value="">请先选择数据源并导入</option>
+                )}
+                {productList.map((p) => (
+                  <option key={p.sku} value={p.sku}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+
+              {currentProduct && (
+                <div className="mt-2 text-[11px] text-slate-500 bg-slate-50 p-2 rounded space-y-1">
+                  <div className="flex justify-between">
+                    <span>采购价(USD 含税):</span>
+                    <span className="font-mono text-slate-700">
+                      ${currentProduct.purchasePrice.toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>包装尺寸 (cm):</span>
+                    <span className="font-mono text-slate-700">
+                      {currentProduct.lengthCm} × {currentProduct.widthCm} ×{" "}
+                      {currentProduct.heightCm}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>单件体积 (CBM):</span>
+                    <span className="font-mono text-slate-700">
+                      {perUnitVolumeCbm.toFixed(4)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>40HQ 装柜数量 (估):</span>
+                    <span className="font-mono text-slate-700 text-right w-16">
+                      {unitsPer40HQ > 0 ? unitsPer40HQ : "-"}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>包装毛重 (kg):</span>
+                    <span className="font-mono text-slate-700">
+                      {currentProduct.weightKg}
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">
+                目标售价 (USD)
+              </label>
+              <div className="relative">
+                <span className="absolute left-3 top-2 text-slate-400 text-xs">
+                  $
+                </span>
+                <input
+                  type="number"
+                  value={salePrice}
+                  onChange={(e) => setSalePrice(Number(e.target.value))}
+                  className="w-full pl-7 p-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">
+                预估广告占比 (0-1)
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  step={0.01}
+                  max={1}
+                  min={0}
+                  value={adRate}
+                  onChange={(e) => setAdRate(Number(e.target.value))}
+                  className="w-full p-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+                />
+                <span className="text-xs text-slate-500 w-12 text-right">
+                  {(adRate * 100).toFixed(0)}%
+                </span>
+              </div>
+            </div>
+
+            {isTkUs && (
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">
+                  TK-US 尾程派送费 (USD / 件)
+                </label>
+                <input
+                  type="number"
+                  value={manualLastMile}
+                  onChange={(e) => setManualLastMile(e.target.value)}
+                  placeholder="例如：12.58"
+                  className="w-full p-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+                />
+                <p className="mt-1 text-[11px] text-slate-400">
+                  TikTok US 尾程费由你根据实际报价手工填写，系统不再按 AMZ
+                  规则自动计算金额。
+                </p>
+              </div>
+            )}
+
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">
+                现金周期（天）
+              </label>
+              <input
+                type="number"
+                value={cashCycleDays}
+                onChange={(e) =>
+                  setCashCycleDays(Math.max(1, Number(e.target.value)))
+                }
+                className="w-full p-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+              />
+              <p className="mt-1 text-[11px] text-slate-400">
+                从支付原材料/生产，到货卖出并回款的资金占用天数，用于计算年资金效率。
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">
+                覆盖默认退货率 (%)
+              </label>
+              <input
+                type="number"
+                placeholder={
+                  "默认: " +
+                  (currentCountry.defaultReturnRate * 100).toFixed(1) +
+                  "%"
+                }
+                value={overrideReturnRate}
+                onChange={(e) => setOverrideReturnRate(e.target.value)}
+                className="w-full p-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+              />
+              <p className="mt-1 text-[11px] text-slate-400">
+                留空则使用维度表中的默认退货率。
+              </p>
             </div>
           </div>
         </div>
       </div>
 
-      {/* 主体内容 */}
-      {activeTab === "cost" && (
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-            {/* 左侧：上传 & 参数 */}
-            <div className="lg:col-span-4 lg:sticky lg:top-24 h-fit space-y-6">
-              {/* 上传 & 数据源选择 */}
-              <div className="bg-white rounded-xl shadow-sm border border-slate-200">
-                <div className="px-4 py-3 border-b border-slate-100 bg-slate-50">
-                  <div className="text-sm font-semibold text-slate-800">
-                    ① 数据源 & 上传
-                  </div>
-                  <div className="text-xs text-slate-500 mt-1">
-                    可以用上一次导入的历史数据，或者上传新的 CSV 覆盖。
-                  </div>
-                </div>
-                <div className="p-4 space-y-4">
-                  <div>
-                    <label className="block text-xs font-medium text-slate-600 mb-1">
-                      数据来源
-                    </label>
-                    <select
-                      value={dataSourceMode}
-                      onChange={(e) =>
-                        handleDataSourceModeChange(
-                          e.target.value as DataSourceMode
-                        )
-                      }
-                      className="w-full p-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-white"
-                    >
-                      <option value="history" disabled={!hasHistory}>
-                        我没有 Excel，用历史数据
-                        {!hasHistory ? "（暂无历史）" : ""}
-                      </option>
-                      <option value="upload">
-                        上传新的 CSV 文件（覆盖）
-                      </option>
-                    </select>
-                    {dataSourceMode === "history" && (
-                      <p className="mt-1 text-[11px] text-slate-500">
-                        当前模式：使用最近一次上传的「新品成本核算.csv」。
-                      </p>
-                    )}
-                  </div>
-
-                  {dataSourceMode === "upload" && (
-                    <div>
-                      <label className="block text-xs font-medium text-slate-600 mb-1">
-                        选择 CSV 文件
-                      </label>
-                      <input
-                        type="file"
-                        accept=".csv"
-                        onChange={handleUploadCsv}
-                        className="block w-full text-xs text-slate-600"
-                      />
-                      <p className="mt-1 text-[11px] text-slate-400">
-                        请从 Excel 将「新品成本核算」导出为 CSV 再上传，上传将覆盖历史数据。
-                      </p>
-                    </div>
-                  )}
-
-                  <div className="text-xs text-slate-500">
-                    当前已导入产品数：{" "}
-                    <span className="font-mono font-semibold">
-                      {productList.length}
-                    </span>
-                  </div>
-
-                  {productList.length > 0 && (
-                    <div className="text-xs text-emerald-600 bg-emerald-50 border border-emerald-100 rounded p-2">
-                      已读取：SKU、包装尺寸、包装毛重、美元采购价，可直接用于测算。
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* 参数输入 */}
-              <div className="bg-white rounded-xl shadow-sm border border-slate-200">
-                <div className="px-4 py-3 border-b border-slate-100 bg-blue-50 flex items-center justify-between">
-                  <div className="text-sm font-semibold text-slate-800">
-                    ② 测算参数
-                  </div>
-                  <div className="text-[11px] text-slate-500">
-                    业务代码 / SKU / 售价 / 广告 / 现金周期 / 尾程
-                  </div>
-                </div>
-                <div className="p-4 space-y-4">
-                  <div>
-                    <label className="block text-xs font-medium text-slate-600 mb-1">
-                      业务代码 (国家/平台)
-                    </label>
-                    <select
-                      value={selectedBizCode}
-                      onChange={(e) => setSelectedBizCode(e.target.value)}
-                      className="w-full p-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-white"
-                    >
-                      {COUNTRY_CONFIGS.map((cfg) => (
-                        <option key={cfg.bizCode} value={cfg.bizCode}>
-                          {cfg.bizCode} ({cfg.country} - {cfg.platform})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-medium text-slate-600 mb-1">
-                      新品 SKU / 品名
-                    </label>
-                    <select
-                      value={selectedSku}
-                      onChange={(e) => setSelectedSku(e.target.value)}
-                      disabled={productList.length === 0}
-                      className="w-full p-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-white disabled:bg-slate-100 disabled:text-slate-400"
-                    >
-                      {productList.length === 0 && (
-                        <option value="">请先选择数据源并导入</option>
-                      )}
-                      {productList.map((p) => (
-                        <option key={p.sku} value={p.sku}>
-                          {p.name}
-                        </option>
-                      ))}
-                    </select>
-
-                    {currentProduct && (
-                      <div className="mt-2 text-[11px] text-slate-500 bg-slate-50 p-2 rounded space-y-1">
-                        <div className="flex justify-between">
-                          <span>采购价(USD 含税):</span>
-                          <span className="font-mono text-slate-700">
-                            ${currentProduct.purchasePrice.toFixed(2)}
-                          </span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span>包装尺寸 (cm):</span>
-                          <span className="font-mono text-slate-700">
-                            {currentProduct.lengthCm} ×{" "}
-                            {currentProduct.widthCm} ×{" "}
-                            {currentProduct.heightCm}
-                          </span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span>单件体积 (CBM):</span>
-                          <span className="font-mono text-slate-700">
-                            {perUnitVolumeCbm.toFixed(4)}
-                          </span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span>40HQ 装柜数量 (估):</span>
-                          <span className="font-mono text-slate-700 text-right w-16">
-                            {unitsPer40HQ > 0 ? unitsPer40HQ : "-"}
-                          </span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span>包装毛重 (kg):</span>
-                          <span className="font-mono text-slate-700">
-                            {currentProduct.weightKg}
-                          </span>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-medium text-slate-600 mb-1">
-                      目标售价 (USD)
-                    </label>
-                    <div className="relative">
-                      <span className="absolute left-3 top-2 text-slate-400 text-xs">
-                        $
-                      </span>
-                      <input
-                        type="number"
-                        value={salePrice}
-                        onChange={(e) => setSalePrice(Number(e.target.value))}
-                        className="w-full pl-7 p-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-medium text-slate-600 mb-1">
-                      预估广告占比 (0-1)
-                    </label>
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="number"
-                        step={0.01}
-                        max={1}
-                        min={0}
-                        value={adRate}
-                        onChange={(e) => setAdRate(Number(e.target.value))}
-                        className="w-full p-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
-                      />
-                      <span className="text-xs text-slate-500 w-12 text-right">
-                        {(adRate * 100).toFixed(0)}%
-                      </span>
-                    </div>
-                  </div>
-
-                  {isTkUs && (
-                    <div>
-                      <label className="block text-xs font-medium text-slate-600 mb-1">
-                        TK-US 尾程派送费 (USD / 件)
-                      </label>
-                      <input
-                        type="number"
-                        value={manualLastMile}
-                        onChange={(e) => setManualLastMile(e.target.value)}
-                        placeholder="例如：12.58"
-                        className="w-full p-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
-                      />
-                      <p className="mt-1 text-[11px] text-slate-400">
-                        TikTok US 尾程费由你根据实际报价手工填写，系统不再按 AMZ
-                        规则自动计算金额。
-                      </p>
-                    </div>
-                  )}
-
-                  <div>
-                    <label className="block text-xs font-medium text-slate-600 mb-1">
-                      现金周期（天）
-                    </label>
-                    <input
-                      type="number"
-                      value={cashCycleDays}
-                      onChange={(e) =>
-                        setCashCycleDays(Math.max(1, Number(e.target.value)))
-                      }
-                      className="w-full p-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
-                    />
-                    <p className="mt-1 text-[11px] text-slate-400">
-                      从支付原材料/生产，到货卖出并回款的资金占用天数，用于计算年资金效率。
-                    </p>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-medium text-slate-600 mb-1">
-                      覆盖默认退货率 (%)
-                    </label>
-                    <input
-                      type="number"
-                      placeholder={
-                        "默认: " +
-                        (currentCountry.defaultReturnRate * 100).toFixed(1) +
-                        "%"
-                      }
-                      value={overrideReturnRate}
-                      onChange={(e) => setOverrideReturnRate(e.target.value)}
-                      className="w-full p-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
-                    />
-                    <p className="mt-1 text-[11px] text-slate-400">
-                      留空则使用维度表中的默认退货率。
-                    </p>
-                  </div>
-                </div>
+      {/* 右侧：结果 */}
+      <div className="lg:col-span-8 space-y-6">
+        {/* KPI 卡片 */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {/* 净利润 + 净利润率 同一张卡片 */}
+          <div
+            className={`p-4 rounded-xl border shadow-sm ${
+              result.netProfit >= 0
+                ? "bg-emerald-50 border-emerald-100"
+                : "bg-red-50 border-red-100"
+            }`}
+          >
+            <div className="flex items-baseline justify-between mb-1">
+              <div className="text-xs text-slate-500">单件净利润 (USD)</div>
+              <div className="text-xs text-slate-500 text-right">
+                净利润率：
+                <span
+                  className={
+                    result.margin >= 0
+                      ? "text-emerald-700 font-semibold ml-1"
+                      : "text-red-700 font-semibold ml-1"
+                  }
+                >
+                  {(result.margin * 100).toFixed(1)}%
+                </span>
               </div>
             </div>
+            <div
+              className={`text-3xl font-bold ${
+                result.netProfit >= 0 ? "text-emerald-700" : "text-red-700"
+              }`}
+            >
+              ${result.netProfit.toFixed(2)}
+            </div>
+          </div>
 
-            {/* 右侧：结果 */}
-            <div className="lg:col-span-8 space-y-6">
-              {/* KPI 卡片 */}
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                {/* 净利润 + 净利润率 同一张卡片 */}
-                <div
-                  className={`p-4 rounded-xl border shadow-sm ${
-                    result.netProfit >= 0
-                      ? "bg-emerald-50 border-emerald-100"
-                      : "bg-red-50 border-red-100"
-                  }`}
-                >
-                  <div className="flex items-baseline justify-between mb-1">
-                    <div className="text-xs text-slate-500">
-                      单件净利润 (USD)
-                    </div>
-                    <div className="text-xs text-slate-500 text-right">
-                      净利润率：
-                      <span
-                        className={
-                          result.margin >= 0
-                            ? "text-emerald-700 font-semibold ml-1"
-                            : "text-red-700 font-semibold ml-1"
-                        }
-                      >
-                        {(result.margin * 100).toFixed(1)}%
-                      </span>
-                    </div>
+          <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-sm">
+            <div className="text-xs text-slate-500 mb-1">
+              单次 ROI（净利 / (采购+头程)）
+            </div>
+            <div
+              className={`text-3xl font-bold ${
+                result.roi >= 0.4
+                  ? "text-blue-600"
+                  : result.roi > 0.25
+                  ? "text-emerald-600"
+                  : result.roi > 0
+                  ? "text-amber-500"
+                  : "text-red-600"
+              }`}
+            >
+              {(result.roi * 100).toFixed(1)}%
+            </div>
+          </div>
+
+          <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-sm">
+            <div className="text-xs text-slate-500 mb-1">
+              年资金效率（基于现金周期 {cashCycleDays} 天）
+            </div>
+            <div className="text-3xl font-bold text-slate-700">
+              {result.capitalEfficiency.toFixed(2)}
+            </div>
+          </div>
+        </div>
+
+        {/* 产品建议卡片 */}
+        {productList.length > 0 && selectedSku && (
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm">
+            <div className="px-4 py-3 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
+              <div className="text-sm font-semibold text-slate-800">
+                ③ 产品建议（自动评级）
+              </div>
+              <div className="text-[11px] text-slate-500">
+                X = 年资金效率，Y = 单次 ROI，基于你设置的现金周期
+              </div>
+            </div>
+            <div className="p-4 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+              <div
+                className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold ${suggestion.badgeClass}`}
+              >
+                {suggestion.label}
+              </div>
+              <div className="text-xs text-slate-600 flex-1">
+                <p>{suggestion.desc}</p>
+                <p className="mt-1 text-[11px] text-slate-400">
+                  单次 ROI：{(result.roi * 100).toFixed(1)}% ｜ 年资金效率：
+                  {result.capitalEfficiency.toFixed(2)}（现金周期 {cashCycleDays} 天）
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* 成本明细表 */}
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+          <div className="bg-slate-50 px-4 py-3 border-b border-slate-200 flex justify-between items-center">
+            <h3 className="font-semibold text-slate-700 text-sm">
+              成本明细表
+            </h3>
+            <div className="text-[11px] bg-yellow-100 text-yellow-800 px-2 py-1 rounded">
+              尾程：{result.sizeTier} / 计费重：
+              {result.chargeWeight.toFixed(2)} kg
+            </div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm text-left">
+              <thead className="text-xs text-slate-500 uppercase bg-slate-50 border-b">
+                <tr>
+                  <th className="px-6 py-3">成本项</th>
+                  <th className="px-6 py-3">金额 (USD)</th>
+                  <th className="px-6 py-3">占售价比例</th>
+                  <th className="px-6 py-3">说明</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                <tr>
+                  <td className="px-6 py-3 font-medium text-slate-700">
+                    采购成本
+                  </td>
+                  <td className="px-6 py-3">
+                    ${result.purchaseCost.toFixed(2)}
+                  </td>
+                  <td className="px-6 py-3 text-slate-500">
+                    {salePrice
+                      ? ((result.purchaseCost / salePrice) * 100).toFixed(1)
+                      : "0.0"}
+                    %
+                  </td>
+                  <td className="px-6 py-3 text-xs text-slate-400">
+                    来源：新品成本核算 CSV (USD 采购价)
+                  </td>
+                </tr>
+
+                <tr>
+                  <td className="px-6 py-3 font-medium text-slate-700">
+                    头程运费
+                  </td>
+                  <td className="px-6 py-3">
+                    ${result.headFreight.toFixed(2)}
+                  </td>
+                  <td className="px-6 py-3 text-slate-500">
+                    {salePrice
+                      ? ((result.headFreight / salePrice) * 100).toFixed(1)
+                      : "0.0"}
+                    %
+                  </td>
+                  <td className="px-6 py-3 text-xs text-slate-400">
+                    {result.volumeCbm.toFixed(4)} CBM × 运价
+                  </td>
+                </tr>
+
+                <tr>
+                  <td className="px-6 py-3 font-medium text-slate-700">
+                    尾程运费
+                  </td>
+                  <td className="px-6 py-3">
+                    ${result.lastMile.toFixed(2)}
+                  </td>
+                  <td className="px-6 py-3 text-slate-500">
+                    {salePrice
+                      ? ((result.lastMile / salePrice) * 100).toFixed(1)
+                      : "0.0"}
+                    %
+                  </td>
+                  <td className="px-6 py-3 text-xs text-slate-400">
+                    规则：
+                    {isTkUs ? "人工填写（TikTok US）" : currentCountry.lastMileRule}
+                  </td>
+                </tr>
+
+                <tr>
+                  <td className="px-6 py-3 font-medium text-slate-700">
+                    平台佣金
+                  </td>
+                  <td className="px-6 py-3">
+                    ${result.referralFee.toFixed(2)}
+                  </td>
+                  <td className="px-6 py-3 text-slate-500">
+                    {salePrice
+                      ? ((result.referralFee / salePrice) * 100).toFixed(1)
+                      : "0.0"}
+                    %
+                  </td>
+                  <td className="px-6 py-3 text-xs text-slate-400">
+                    佣金率：
+                    {(currentCountry.referralFeeRate * 100).toFixed(1)}%
+                  </td>
+                </tr>
+
+                <tr>
+                  <td className="px-6 py-3 font-medium text-slate-700">
+                    仓储及杂费
+                  </td>
+                  <td className="px-6 py-3">
+                    ${result.storageOther.toFixed(2)}
+                  </td>
+                  <td className="px-6 py-3 text-slate-500">
+                    {salePrice
+                      ? ((result.storageOther / salePrice) * 100).toFixed(1)
+                      : "0.0"}
+                    %
+                  </td>
+                  <td className="px-6 py-3 text-xs text-slate-400">
+                    杂费率：
+                    {(currentCountry.storageOtherRate * 100).toFixed(1)}%
+                  </td>
+                </tr>
+
+                <tr>
+                  <td className="px-6 py-3 font-medium text-slate-700">
+                    广告费
+                  </td>
+                  <td className="px-6 py-3 text-orange-600">
+                    ${result.adCost.toFixed(2)}
+                  </td>
+                  <td className="px-6 py-3 text-slate-500">
+                    {salePrice
+                      ? ((result.adCost / salePrice) * 100).toFixed(1)
+                      : "0.0"}
+                    %
+                  </td>
+                  <td className="px-6 py-3 text-xs text-slate-400">
+                    人工设置广告占比
+                  </td>
+                </tr>
+
+                <tr>
+                  <td className="px-6 py-3 font-medium text-slate-700">
+                    退货损耗
+                  </td>
+                  <td className="px-6 py-3 text-orange-600">
+                    ${result.returnLoss.toFixed(2)}
+                  </td>
+                  <td className="px-6 py-3 text-slate-500">
+                    {salePrice
+                      ? ((result.returnLoss / salePrice) * 100).toFixed(1)
+                      : "0.0"}
+                    %
+                  </td>
+                  <td className="px-6 py-3 text-xs text-slate-400">
+                    按退货率 {(result.appliedReturnRate * 100).toFixed(1)}%
+                  </td>
+                </tr>
+
+                <tr className="bg-slate-50 font-bold">
+                  <td className="px-6 py-3 text-slate-900">总成本</td>
+                  <td className="px-6 py-3 text-slate-900">
+                    ${result.totalCost.toFixed(2)}
+                  </td>
+                  <td className="px-6 py-3 text-slate-900">
+                    {salePrice
+                      ? ((result.totalCost / salePrice) * 100).toFixed(1)
+                      : "0.0"}
+                    %
+                  </td>
+                  <td className="px-6 py-3" />
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ============================================================================
+// 组件：AI 选品报告（前端壳，调用你的 /api/ai-product-research）
+// ============================================================================
+
+const AiProductResearch: React.FC = () => {
+  const [fileName, setFileName] = useState<string>("");
+  const [csvText, setCsvText] = useState<string>("");
+  const [note, setNote] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<AiResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [activeModuleKey, setActiveModuleKey] = useState<string>("1.1");
+
+  const handleFileChange = async (
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+
+    try {
+      const text = await f.text();
+      setFileName(f.name);
+      setCsvText(text);
+      setResult(null);
+      setError(null);
+    } catch (err: any) {
+      setError("读取文件失败：" + (err?.message || String(err)));
+    }
+  };
+
+  const handleSubmit = async () => {
+    if (!csvText) {
+      setError("请先上传从卖家精灵 / Helium10 导出的 CSV 报表。");
+      return;
+    }
+    setError(null);
+    setResult(null);
+    setLoading(true);
+
+    try {
+      const res = await fetch("/api/ai-product-research", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          csvText,
+          note,
+        }),
+      });
+
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || "AI 分析失败");
+      }
+
+      const data = (await res.json()) as AiResult;
+      setResult(data);
+    } catch (err: any) {
+      setError(err.message || "请求失败");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const renderMarkdown = (md: string) => {
+    if (!md) {
+      return (
+        <p className="text-xs text-slate-400">
+          （暂未返回内容，后端可以在 AiResult.modules["小节编号"] 中补充该模块的分析文本。）
+        </p>
+      );
+    }
+    return (
+      <pre className="whitespace-pre-wrap text-xs md:text-sm font-sans bg-slate-50 p-3 rounded-lg border border-slate-100">
+        {md}
+      </pre>
+    );
+  };
+
+  const scrollToModule = (key: string) => {
+    setActiveModuleKey(key);
+    const el = document.getElementById(`module-${key}`);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  };
+
+  const levelBadgeClass = (level: AiCandidate["level"]) => {
+    switch (level) {
+      case "A":
+        return "bg-emerald-50 text-emerald-700 border border-emerald-200";
+      case "B":
+        return "bg-blue-50 text-blue-700 border border-blue-200";
+      case "C":
+        return "bg-amber-50 text-amber-700 border border-amber-200";
+      case "D":
+      default:
+        return "bg-red-50 text-red-700 border border-red-200";
+    }
+  };
+
+  return (
+    <div className="space-y-6 pb-10">
+      <h2 className="text-lg font-semibold">AI 选品中心（报表版 V0）</h2>
+
+      {/* 上传区域 */}
+      <div className="grid gap-4 md:grid-cols-[320px,1fr]">
+        <section className="space-y-3 border rounded-xl bg-white p-4 shadow-sm">
+          <div className="space-y-1">
+            <div className="text-sm font-medium text-slate-800">
+              1. 上传数据报表
+            </div>
+            <input
+              type="file"
+              accept=".csv,.txt"
+              onChange={handleFileChange}
+              className="text-sm"
+            />
+            {fileName && (
+              <p className="text-[11px] text-slate-500 mt-1">
+                已选择文件：{fileName}
+              </p>
+            )}
+            <p className="text-xs text-slate-500">
+              建议使用卖家精灵 / Helium10 导出 CSV，包含 ASIN、标题、价格、月销量、
+              销售额、评论数、评分、搜索量等字段。前端会把 CSV 文本发给后台，不会长期保存原文件。
+            </p>
+          </div>
+
+          <div className="space-y-1">
+            <div className="text-sm font-medium text-slate-800">
+              2. 场景备注（可选）
+            </div>
+            <textarea
+              className="border rounded-md px-2 py-1 text-sm w-full h-16"
+              placeholder="例如：无线战绳 · Amazon US · 最近30天数据；目标客单 50-80 美金；排除大牌"
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+            />
+            <p className="text-xs text-slate-400">
+              会一并发送给 AI，帮助更贴近你的选品思路（如：限定价格区间、只看 FBA、排除大牌等）。
+            </p>
+          </div>
+
+          <button
+            onClick={handleSubmit}
+            disabled={loading || !csvText}
+            className="w-full rounded-md bg-slate-900 text-white text-sm py-2 disabled:opacity-60"
+          >
+            {loading ? "AI 正在分析…" : "生成 AI 选品全流程报告"}
+          </button>
+
+          {error && (
+            <p className="text-xs text-red-500 whitespace-pre-wrap">{error}</p>
+          )}
+
+          {!error && !result && !loading && (
+            <p className="text-xs text-slate-500">
+              小提示：可以先用「无线战绳 / 引体向上」这类你熟悉的类目试水，对比一下和你之前手动分析的感觉是否一致。
+            </p>
+          )}
+        </section>
+
+        {!result && !loading && (
+          <section className="text-sm text-slate-500 bg-slate-50 border border-dashed border-slate-200 rounded-xl p-4">
+            上传报表后，我会自动生成：
+            <ul className="mt-1 list-disc list-inside space-y-1 text-xs">
+              <li>产品分析（Listing 概况、产品成绩、库存能力等）</li>
+              <li>利润分析（价格销量图、利润试算、盈亏平衡等）</li>
+              <li>市场分析（销量趋势、TOP ASIN、Google Trends、搜索热度等）</li>
+              <li>竞品分析 / 评论分析 / 产品切入点 / 货源建议 / 合规检测</li>
+            </ul>
+            <p className="mt-2 text-xs text-slate-400">
+              当前版本先用文字 + 结构化卡片呈现，后续可以逐步接入可视化图表（ECharts）以及和你的成本核算工具联动。
+            </p>
+          </section>
+        )}
+
+        {loading && (
+          <section className="flex items-center justify-center text-sm text-slate-600 bg-slate-50 border rounded-xl">
+            AI 正在分析报表并生成各模块内容…
+          </section>
+        )}
+      </div>
+
+      {/* 整页报告区域：左侧目录 + 右侧内容 */}
+      {result && (
+        <div className="grid gap-4 lg:grid-cols-[260px,1fr]">
+          {/* 左侧：模块目录 */}
+          <aside className="bg-white border rounded-xl shadow-sm p-3 h-fit lg:sticky lg:top-24">
+            <div className="text-xs font-semibold text-slate-700 mb-2">
+              报告目录
+            </div>
+            <div className="space-y-2 max-h-[70vh] overflow-y-auto pr-1">
+              {AI_REPORT_TOC.map((group) => (
+                <div key={group.groupKey}>
+                  <div className="text-xs font-semibold text-slate-800 mb-1">
+                    {group.groupTitle}
                   </div>
-                  <div
-                    className={`text-3xl font-bold ${
-                      result.netProfit >= 0
-                        ? "text-emerald-700"
-                        : "text-red-700"
-                    }`}
-                  >
-                    ${result.netProfit.toFixed(2)}
+                  <ul className="space-y-0.5">
+                    {group.items.map((item) => {
+                      const active = activeModuleKey === item.key;
+                      return (
+                        <li key={item.key}>
+                          <button
+                            type="button"
+                            onClick={() => scrollToModule(item.key)}
+                            className={`w-full text-left text-[11px] px-2 py-1 rounded-md ${
+                              active
+                                ? "bg-slate-900 text-white"
+                                : "text-slate-600 hover:bg-slate-100"
+                            }`}
+                          >
+                            {item.key} {item.title}
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          </aside>
+
+          {/* 右侧：报告主体 */}
+          <section className="space-y-6">
+            {/* 顶部：总体概览 */}
+            <div className="bg-white border rounded-xl shadow-sm p-4 space-y-4">
+              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+                <div>
+                  <div className="text-xs text-slate-500 uppercase">
+                    AI PRODUCT RESEARCH SUMMARY
+                  </div>
+                  <div className="text-sm font-semibold text-slate-900">
+                    本次选品报告 · 概览
                   </div>
                 </div>
+                <div>
+                  <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-slate-900 text-white">
+                    {result.decisionLabel}
+                  </span>
+                </div>
+              </div>
 
-                <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-sm">
-                  <div className="text-xs text-slate-500 mb-1">
-                    单次 ROI（净利 / (采购+头程)）
+              {/* 指标卡片 */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                <div className="border rounded-lg p-3 bg-slate-50">
+                  <div className="text-[11px] text-slate-500 mb-1">
+                    市场机会评分
                   </div>
-                  <div
-                    className={`text-3xl font-bold ${
-                      result.roi >= 0.4
-                        ? "text-blue-600"
-                        : result.roi > 0.25
-                        ? "text-emerald-600"
-                        : result.roi > 0
-                        ? "text-amber-500"
-                        : "text-red-600"
-                    }`}
-                  >
-                    {(result.roi * 100).toFixed(1)}%
+                  <div className="text-xl font-semibold text-slate-900">
+                    {result.summary.opportunityScore}/100
                   </div>
                 </div>
-
-                <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-sm">
-                  <div className="text-xs text-slate-500 mb-1">
-                    年资金效率（基于现金周期 {cashCycleDays} 天）
+                <div className="border rounded-lg p-3 bg-slate-50">
+                  <div className="text-[11px] text-slate-500 mb-1">
+                    竞争强度（越低越好）
                   </div>
-                  <div className="text-3xl font-bold text-slate-700">
-                    {result.capitalEfficiency.toFixed(2)}
+                  <div className="text-xl font-semibold text-slate-900">
+                    {result.summary.competitionScore}/100
+                  </div>
+                </div>
+                <div className="border rounded-lg p-3 bg-slate-50">
+                  <div className="text-[11px] text-slate-500 mb-1">
+                    利润潜力
+                  </div>
+                  <div className="text-xl font-semibold text-slate-900">
+                    {result.summary.profitPotential}
+                  </div>
+                </div>
+                <div className="border rounded-lg p-3 bg-slate-50">
+                  <div className="text-[11px] text-slate-500 mb-1">
+                    整体风险
+                  </div>
+                  <div className="text-xl font-semibold text-slate-900">
+                    {result.summary.riskLevel}
                   </div>
                 </div>
               </div>
 
-              {/* 产品建议卡片 */}
-              {productList.length > 0 && selectedSku && (
-                <div className="bg-white rounded-xl border border-slate-200 shadow-sm">
-                  <div className="px-4 py-3 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
-                    <div className="text-sm font-semibold text-slate-800">
-                      ③ 产品建议（自动评级）
-                    </div>
-                    <div className="text-[11px] text-slate-500">
-                      X = 年资金效率，Y = 单次 ROI，基于你设置的现金周期
-                    </div>
-                  </div>
-                  <div className="p-4 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-                    <div
-                      className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold ${suggestion.badgeClass}`}
-                    >
-                      {suggestion.label}
-                    </div>
-                    <div className="text-xs text-slate-600 flex-1">
-                      <p>{suggestion.desc}</p>
-                      <p className="mt-1 text-[11px] text-slate-400">
-                        单次 ROI：{(result.roi * 100).toFixed(1)}% ｜ 年资金效率：
-                        {result.capitalEfficiency.toFixed(2)}（现金周期{" "}
-                        {cashCycleDays} 天）
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
+              <p className="text-xs text-slate-600">
+                {result.decisionReason}
+              </p>
+            </div>
 
-              {/* 成本明细表 */}
-              <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-                <div className="bg-slate-50 px-4 py-3 border-b border-slate-200 flex justify-between items-center">
-                  <h3 className="font-semibold text-slate-700 text-sm">
-                    成本明细表
+            {/* Top 候选款列表 */}
+            {result.candidates && result.candidates.length > 0 && (
+              <div className="bg-white border rounded-xl shadow-sm p-4 space-y-3">
+                <div className="flex justify-between items-center mb-1">
+                  <h3 className="text-sm font-semibold text-slate-900">
+                    核心候选款 / 关键词
                   </h3>
-                  <div className="text-[11px] bg-yellow-100 text-yellow-800 px-2 py-1 rounded">
-                    尾程：{result.sizeTier} / 计费重：
-                    {result.chargeWeight.toFixed(2)} kg
-                  </div>
+                  <span className="text-[11px] text-slate-500">
+                    共 {result.candidates.length} 条，按综合优先级排序
+                  </span>
                 </div>
                 <div className="overflow-x-auto">
-                  <table className="w-full text-sm text-left">
-                    <thead className="text-xs text-slate-500 uppercase bg-slate-50 border-b">
+                  <table className="w-full text-xs md:text-sm">
+                    <thead className="bg-slate-50 text-[11px] text-slate-500">
                       <tr>
-                        <th className="px-6 py-3">成本项</th>
-                        <th className="px-6 py-3">金额 (USD)</th>
-                        <th className="px-6 py-3">占售价比例</th>
-                        <th className="px-6 py-3">说明</th>
+                        <th className="px-3 py-2 text-left">序</th>
+                        <th className="px-3 py-2 text-left">ID</th>
+                        <th className="px-3 py-2 text-left">标题</th>
+                        <th className="px-3 py-2 text-left">类型</th>
+                        <th className="px-3 py-2 text-right">价格</th>
+                        <th className="px-3 py-2 text-right">月销</th>
+                        <th className="px-3 py-2 text-right">月销售额</th>
+                        <th className="px-3 py-2 text-right">评论</th>
+                        <th className="px-3 py-2 text-right">评分</th>
+                        <th className="px-3 py-2 text-left">等级</th>
+                        <th className="px-3 py-2 text-left">标签</th>
+                        <th className="px-3 py-2 text-left">建议动作</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      <tr>
-                        <td className="px-6 py-3 font-medium text-slate-700">
-                          采购成本
-                        </td>
-                        <td className="px-6 py-3">
-                          ${result.purchaseCost.toFixed(2)}
-                        </td>
-                        <td className="px-6 py-3 text-slate-500">
-                          {salePrice
-                            ? (
-                                (result.purchaseCost / salePrice) *
-                                100
-                              ).toFixed(1)
-                            : "0.0"}
-                          %
-                        </td>
-                        <td className="px-6 py-3 text-xs text-slate-400">
-                          来源：新品成本核算 CSV (USD 采购价)
-                        </td>
-                      </tr>
-
-                      <tr>
-                        <td className="px-6 py-3 font-medium text-slate-700">
-                          头程运费
-                        </td>
-                        <td className="px-6 py-3">
-                          ${result.headFreight.toFixed(2)}
-                        </td>
-                        <td className="px-6 py-3 text-slate-500">
-                          {salePrice
-                            ? (
-                                (result.headFreight / salePrice) *
-                                100
-                              ).toFixed(1)
-                            : "0.0"}
-                          %
-                        </td>
-                        <td className="px-6 py-3 text-xs text-slate-400">
-                          {result.volumeCbm.toFixed(4)} CBM × 运价
-                        </td>
-                      </tr>
-
-                      <tr>
-                        <td className="px-6 py-3 font-medium text-slate-700">
-                          尾程运费
-                        </td>
-                        <td className="px-6 py-3">
-                          ${result.lastMile.toFixed(2)}
-                        </td>
-                        <td className="px-6 py-3 text-slate-500">
-                          {salePrice
-                            ? ((result.lastMile / salePrice) * 100).toFixed(1)
-                            : "0.0"}
-                          %
-                        </td>
-                        <td className="px-6 py-3 text-xs text-slate-400">
-                          规则：
-                          {isTkUs
-                            ? "人工填写（TikTok US）"
-                            : currentCountry.lastMileRule}
-                        </td>
-                      </tr>
-
-                      <tr>
-                        <td className="px-6 py-3 font-medium text-slate-700">
-                          平台佣金
-                        </td>
-                        <td className="px-6 py-3">
-                          ${result.referralFee.toFixed(2)}
-                        </td>
-                        <td className="px-6 py-3 text-slate-500">
-                          {salePrice
-                            ? (
-                                (result.referralFee / salePrice) *
-                                100
-                              ).toFixed(1)
-                            : "0.0"}
-                          %
-                        </td>
-                        <td className="px-6 py-3 text-xs text-slate-400">
-                          佣金率：
-                          {(currentCountry.referralFeeRate * 100).toFixed(1)}%
-                        </td>
-                      </tr>
-
-                      <tr>
-                        <td className="px-6 py-3 font-medium text-slate-700">
-                          仓储及杂费
-                        </td>
-                        <td className="px-6 py-3">
-                          ${result.storageOther.toFixed(2)}
-                        </td>
-                        <td className="px-6 py-3 text-slate-500">
-                          {salePrice
-                            ? (
-                                (result.storageOther / salePrice) *
-                                100
-                              ).toFixed(1)
-                            : "0.0"}
-                          %
-                        </td>
-                        <td className="px-6 py-3 text-xs text-slate-400">
-                          杂费率：
-                          {(currentCountry.storageOtherRate * 100).toFixed(1)}%
-                        </td>
-                      </tr>
-
-                      <tr>
-                        <td className="px-6 py-3 font-medium text-slate-700">
-                          广告费
-                        </td>
-                        <td className="px-6 py-3 text-orange-600">
-                          ${result.adCost.toFixed(2)}
-                        </td>
-                        <td className="px-6 py-3 text-slate-500">
-                          {salePrice
-                            ? ((result.adCost / salePrice) * 100).toFixed(1)
-                            : "0.0"}
-                          %
-                        </td>
-                        <td className="px-6 py-3 text-xs text-slate-400">
-                          人工设置广告占比
-                        </td>
-                      </tr>
-
-                      <tr>
-                        <td className="px-6 py-3 font-medium text-slate-700">
-                          退货损耗
-                        </td>
-                        <td className="px-6 py-3 text-orange-600">
-                          ${result.returnLoss.toFixed(2)}
-                        </td>
-                        <td className="px-6 py-3 text-slate-500">
-                          {salePrice
-                            ? (
-                                (result.returnLoss / salePrice) *
-                                100
-                              ).toFixed(1)
-                            : "0.0"}
-                          %
-                        </td>
-                        <td className="px-6 py-3 text-xs text-slate-400">
-                          按退货率{" "}
-                          {(result.appliedReturnRate * 100).toFixed(1)}%
-                        </td>
-                      </tr>
-
-                      <tr className="bg-slate-50 font-bold">
-                        <td className="px-6 py-3 text-slate-900">总成本</td>
-                        <td className="px-6 py-3 text-slate-900">
-                          ${result.totalCost.toFixed(2)}
-                        </td>
-                        <td className="px-6 py-3 text-slate-900">
-                          {salePrice
-                            ? (
-                                (result.totalCost / salePrice) *
-                                100
-                              ).toFixed(1)
-                            : "0.0"}
-                          %
-                        </td>
-                        <td className="px-6 py-3" />
-                      </tr>
+                      {result.candidates.map((c) => (
+                        <tr key={c.rank + c.id}>
+                          <td className="px-3 py-2 text-slate-500">
+                            {c.rank}
+                          </td>
+                          <td className="px-3 py-2 font-mono text-slate-700">
+                            {c.id}
+                          </td>
+                          <td className="px-3 py-2 max-w-[260px]">
+                            <div className="line-clamp-2">{c.title}</div>
+                          </td>
+                          <td className="px-3 py-2 text-slate-500">
+                            {c.type}
+                          </td>
+                          <td className="px-3 py-2 text-right">
+                            {c.price != null ? `$${c.price.toFixed(2)}` : "-"}
+                          </td>
+                          <td className="px-3 py-2 text-right">
+                            {c.monthlySales != null ? c.monthlySales : "-"}
+                          </td>
+                          <td className="px-3 py-2 text-right">
+                            {c.revenue != null ? `$${c.revenue}` : "-"}
+                          </td>
+                          <td className="px-3 py-2 text-right">
+                            {c.reviews != null ? c.reviews : "-"}
+                          </td>
+                          <td className="px-3 py-2 text-right">
+                            {c.rating != null ? c.rating.toFixed(1) : "-"}
+                          </td>
+                          <td className="px-3 py-2">
+                            <span
+                              className={
+                                "inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold " +
+                                levelBadgeClass(c.level)
+                              }
+                            >
+                              {c.level}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 text-slate-600">
+                            {c.tag}
+                          </td>
+                          <td className="px-3 py-2 text-slate-600">
+                            {c.action}
+                          </td>
+                        </tr>
+                      ))}
                     </tbody>
                   </table>
                 </div>
               </div>
+            )}
 
-              {/* TODO：可以在这里加导出 CSV 等操作 */}
+            {/* 模块详细分析 */}
+            <div className="space-y-4">
+              {AI_REPORT_TOC.map((group) => (
+                <div key={group.groupKey}>
+                  <h3 className="text-xs font-semibold text-slate-700 mb-2">
+                    {group.groupTitle}
+                  </h3>
+                  <div className="space-y-3">
+                    {group.items.map((item) => {
+                      const content =
+                        (result.modules && result.modules[item.key]) || "";
+                      return (
+                        <div
+                          key={item.key}
+                          id={`module-${item.key}`}
+                          className="bg-white border rounded-xl shadow-sm p-3 md:p-4"
+                        >
+                          <div className="flex items-center justify-between mb-2">
+                            <div className="text-xs font-semibold text-slate-900">
+                              {item.key} {item.title}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => scrollToModule(item.key)}
+                              className="text-[11px] text-slate-400 hover:text-slate-600"
+                            >
+                              回到目录
+                            </button>
+                          </div>
+                          {renderMarkdown(content)}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* 完整长文报告 */}
+            {result.fullReportMarkdown && (
+              <div className="bg-white border rounded-xl shadow-sm p-4 space-y-2">
+                <div className="text-sm font-semibold text-slate-900">
+                  七：完整长文报告（适合导出给老板/团队）
+                </div>
+                {renderMarkdown(result.fullReportMarkdown)}
+              </div>
+            )}
+          </section>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ============================================================================
+// 主 App：顶部导航 + Tab 切换
+// ============================================================================
+
+type MainTab = "profit" | "ai";
+
+const App: React.FC = () => {
+  const [activeTab, setActiveTab] = useState<MainTab>("profit");
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans pb-10">
+      {/* 顶部导航 */}
+      <div className="bg-white border-b border-slate-200 sticky top-0 z-10 shadow-sm">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="bg-blue-600 text-white p-1.5 rounded-lg text-xs font-bold">
+              ND
+            </div>
+            <div>
+              <h1 className="text-xl font-bold text-slate-900 tracking-tight">
+                NeuroDesk · 产品决策工作台
+              </h1>
+              <p className="text-xs text-slate-500">
+                成本利润测算 + AI 选品报告（内部使用）
+              </p>
             </div>
           </div>
-        </div>
-      )}
 
-      {activeTab === "ai" && (
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-          <AiProductResearch />
+          <div className="flex items-center gap-2 text-xs">
+            <button
+              className={`px-3 py-1.5 rounded-full border ${
+                activeTab === "profit"
+                  ? "bg-slate-900 text-white border-slate-900"
+                  : "bg-white text-slate-700 border-slate-200"
+              }`}
+              onClick={() => setActiveTab("profit")}
+            >
+              成本 & ROI 测算
+            </button>
+            <button
+              className={`px-3 py-1.5 rounded-full border ${
+                activeTab === "ai"
+                  ? "bg-slate-900 text-white border-slate-900"
+                  : "bg-white text-slate-700 border-slate-200"
+              }`}
+              onClick={() => setActiveTab("ai")}
+            >
+              AI 选品报告
+            </button>
+          </div>
         </div>
-      )}
+      </div>
+
+      {/* 内容区域 */}
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {activeTab === "profit" ? <ProfitCalculator /> : <AiProductResearch />}
+      </div>
     </div>
   );
 };
