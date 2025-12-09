@@ -1,4 +1,10 @@
-import React, { useState, useMemo, useEffect, ChangeEvent } from "react";
+import React, {
+  useState,
+  useMemo,
+  useEffect,
+  ChangeEvent,
+} from "react";
+import * as XLSX from "xlsx";
 
 // ============================================================================
 // 类型定义：成本测算相关
@@ -118,6 +124,12 @@ interface AiTocGroup {
   groupKey: string;
   groupTitle: string;
   items: AiTocItem[];
+}
+
+// 用来承接前端上传给后端的多报表
+interface UploadedFile {
+  name: string;
+  content: string; // 每个 Excel / CSV 转成的 CSV 文本
 }
 
 // ============================================================================
@@ -573,7 +585,8 @@ function calculateProfit(
   const { salePrice, adRate } = input;
 
   const volumeCbm =
-    (productCfg.lengthCm * productCfg.widthCm * productCfg.heightCm) / 1_000_000;
+    (productCfg.lengthCm * productCfg.widthCm * productCfg.heightCm) /
+    1_000_000;
 
   const purchaseCost = productCfg.purchasePrice;
 
@@ -1209,7 +1222,8 @@ const ProfitCalculator: React.FC = () => {
                 <p>{suggestion.desc}</p>
                 <p className="mt-1 text-[11px] text-slate-400">
                   单次 ROI：{(result.roi * 100).toFixed(1)}% ｜ 年资金效率：
-                  {result.capitalEfficiency.toFixed(2)}（现金周期 {cashCycleDays} 天）
+                  {result.capitalEfficiency.toFixed(2)}（现金周期 {cashCycleDays}{" "}
+                  天）
                 </p>
               </div>
             </div>
@@ -1390,38 +1404,76 @@ const ProfitCalculator: React.FC = () => {
 };
 
 // ============================================================================
-// 组件：AI 选品报告（前端壳，调用你的 /api/ai-product-research）
+// 组件：AI 选品报告（支持多 Excel + 导出 PDF）
 // ============================================================================
 
 const AiProductResearch: React.FC = () => {
-  const [fileName, setFileName] = useState<string>("");
-  const [csvText, setCsvText] = useState<string>("");
+  const [files, setFiles] = useState<UploadedFile[]>([]);
   const [note, setNote] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<AiResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [activeModuleKey, setActiveModuleKey] = useState<string>("1.1");
 
-  const handleFileChange = async (
-    e: React.ChangeEvent<HTMLInputElement>
-  ) => {
-    const f = e.target.files?.[0];
-    if (!f) return;
+  // 处理多文件上传（Excel / CSV），全部转成 CSV 文本
+  const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
+    const input = e.target;
+    const fileList = input.files;
+    if (!fileList || fileList.length === 0) return;
 
     try {
-      const text = await f.text();
-      setFileName(f.name);
-      setCsvText(text);
+      const uploaded: UploadedFile[] = await Promise.all(
+        Array.from(fileList).map(
+          (file) =>
+            new Promise<UploadedFile>((resolve, reject) => {
+              const ext = file.name.split(".").pop()?.toLowerCase();
+              const reader = new FileReader();
+
+              if (ext === "xlsx" || ext === "xls") {
+                // Excel → 读成 ArrayBuffer → 转 CSV
+                reader.onload = (evt) => {
+                  try {
+                    const data = evt.target?.result as ArrayBuffer;
+                    const wb = XLSX.read(data, { type: "array" });
+                    const firstSheetName = wb.SheetNames[0];
+                    const sheet = wb.Sheets[firstSheetName];
+                    const csv = XLSX.utils.sheet_to_csv(sheet);
+                    resolve({ name: file.name, content: csv });
+                  } catch (err) {
+                    reject(err);
+                  }
+                };
+                reader.onerror = () =>
+                  reject(reader.error || new Error("读取 Excel 失败"));
+                reader.readAsArrayBuffer(file);
+              } else {
+                // 普通 CSV / TXT 直接读文本
+                reader.onload = (evt) => {
+                  const text = (evt.target?.result as string) || "";
+                  resolve({ name: file.name, content: text });
+                };
+                reader.onerror = () =>
+                  reject(reader.error || new Error("读取文件失败"));
+                reader.readAsText(file, "utf-8");
+              }
+            })
+        )
+      );
+
+      setFiles(uploaded);
       setResult(null);
       setError(null);
     } catch (err: any) {
-      setError("读取文件失败：" + (err?.message || String(err)));
+      console.error(err);
+      setError("解析报表失败，请检查文件格式（可上传 Excel 或 CSV）");
+    } finally {
+      input.value = "";
     }
   };
 
   const handleSubmit = async () => {
-    if (!csvText) {
-      setError("请先上传从卖家精灵 / Helium10 导出的 CSV 报表。");
+    if (files.length === 0) {
+      setError("请先上传至少一个 Excel / CSV 报表。");
       return;
     }
     setError(null);
@@ -1435,7 +1487,10 @@ const AiProductResearch: React.FC = () => {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          csvText,
+          csvList: files.map((f) => ({
+            name: f.name,
+            content: f.content,
+          })),
           note,
         }),
       });
@@ -1458,7 +1513,8 @@ const AiProductResearch: React.FC = () => {
     if (!md) {
       return (
         <p className="text-xs text-slate-400">
-          （暂未返回内容，后端可以在 AiResult.modules["小节编号"] 中补充该模块的分析文本。）
+          （该模块当前没有返回内容，可以在后端 AiResult.modules["小节编号"]
+          中补充。）
         </p>
       );
     }
@@ -1491,9 +1547,26 @@ const AiProductResearch: React.FC = () => {
     }
   };
 
+  const handleExportPdf = () => {
+    if (typeof window === "undefined") return;
+    window.print(); // 浏览器选择“另存为 PDF”
+  };
+
   return (
     <div className="space-y-6 pb-10">
-      <h2 className="text-lg font-semibold">AI 选品中心（报表版 V0）</h2>
+      {/* 标题 + 导出 PDF */}
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold">
+          AI 选品中心（报表版 V0）
+        </h2>
+        <button
+          onClick={handleExportPdf}
+          disabled={!result}
+          className="rounded-full border border-slate-300 px-4 py-1.5 text-xs bg-white hover:bg-slate-50 disabled:opacity-40"
+        >
+          导出 PDF
+        </button>
+      </div>
 
       {/* 上传区域 */}
       <div className="grid gap-4 md:grid-cols-[320px,1fr]">
@@ -1504,18 +1577,27 @@ const AiProductResearch: React.FC = () => {
             </div>
             <input
               type="file"
-              accept=".csv,.txt"
+              accept=".xlsx,.xls,.csv,.txt"
+              multiple
               onChange={handleFileChange}
               className="text-sm"
             />
-            {fileName && (
-              <p className="text-[11px] text-slate-500 mt-1">
-                已选择文件：{fileName}
-              </p>
+            {files.length > 0 && (
+              <div className="mt-1 text-[11px] text-slate-500">
+                已选择 {files.length} 个文件：
+                <ul className="list-disc list-inside mt-1 space-y-0.5 max-h-24 overflow-y-auto">
+                  {files.map((f) => (
+                    <li key={f.name}>{f.name}</li>
+                  ))}
+                </ul>
+              </div>
             )}
             <p className="text-xs text-slate-500">
-              建议使用卖家精灵 / Helium10 导出 CSV，包含 ASIN、标题、价格、月销量、
-              销售额、评论数、评分、搜索量等字段。前端会把 CSV 文本发给后台，不会长期保存原文件。
+              支持上传多个报表，例如：
+              <span className="font-mono">
+                具体分析表.xlsx / TopASIN_30days.xlsx / 关键词趋势.csv
+              </span>
+              。前端会自动转成 CSV 列表传给 AI。
             </p>
           </div>
 
@@ -1530,13 +1612,14 @@ const AiProductResearch: React.FC = () => {
               onChange={(e) => setNote(e.target.value)}
             />
             <p className="text-xs text-slate-400">
-              会一并发送给 AI，帮助更贴近你的选品思路（如：限定价格区间、只看 FBA、排除大牌等）。
+              会一并发送给 AI，帮助更贴近你的选品思路（如：限定价格区间、只看 FBA、
+              排除大牌等）。
             </p>
           </div>
 
           <button
             onClick={handleSubmit}
-            disabled={loading || !csvText}
+            disabled={loading || files.length === 0}
             className="w-full rounded-md bg-slate-900 text-white text-sm py-2 disabled:opacity-60"
           >
             {loading ? "AI 正在分析…" : "生成 AI 选品全流程报告"}
@@ -1563,7 +1646,8 @@ const AiProductResearch: React.FC = () => {
               <li>竞品分析 / 评论分析 / 产品切入点 / 货源建议 / 合规检测</li>
             </ul>
             <p className="mt-2 text-xs text-slate-400">
-              当前版本先用文字 + 结构化卡片呈现，后续可以逐步接入可视化图表（ECharts）以及和你的成本核算工具联动。
+              当前版本先用文字 + 结构化卡片呈现，后续可以逐步接入可视化图表（ECharts）
+              以及和你的成本核算工具联动。
             </p>
           </section>
         )}
@@ -1822,56 +1906,64 @@ const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<MainTab>("profit");
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans pb-10">
-      {/* 顶部导航 */}
-      <div className="bg-white border-b border-slate-200 sticky top-0 z-10 shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="bg-blue-600 text-white p-1.5 rounded-lg text-xs font-bold">
-              ND
-            </div>
-            <div>
-              <h1 className="text-xl font-bold text-slate-900 tracking-tight">
-                NeuroDesk · 产品决策工作台
-              </h1>
-              <p className="text-xs text-slate-500">
-                成本利润测算 + AI 选品报告（内部使用）
-              </p>
-            </div>
-          </div>
+    <>
+      {/* 打印时可以按需扩展样式，这里只简单隐藏浏览器默认背景 */}
+      <style>{`@media print { body { background: #ffffff !important; } }`}</style>
 
-          <div className="flex items-center gap-2 text-xs">
-            <button
-              className={`px-3 py-1.5 rounded-full border ${
-                activeTab === "profit"
-                  ? "bg-slate-900 text-white border-slate-900"
-                  : "bg-white text-slate-700 border-slate-200"
-              }`}
-              onClick={() => setActiveTab("profit")}
-            >
-              成本 & ROI 测算
-            </button>
-            <button
-              className={`px-3 py-1.5 rounded-full border ${
-                activeTab === "ai"
-                  ? "bg-slate-900 text-white border-slate-900"
-                  : "bg-white text-slate-700 border-slate-200"
-              }`}
-              onClick={() => setActiveTab("ai")}
-            >
-              AI 选品报告
-            </button>
+      <div className="min-h-screen bg-slate-50 text-slate-900 font-sans pb-10">
+        {/* 顶部导航 */}
+        <div className="bg-white border-b border-slate-200 sticky top-0 z-10 shadow-sm">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="bg-blue-600 text-white p-1.5 rounded-lg text-xs font-bold">
+                ND
+              </div>
+              <div>
+                <h1 className="text-xl font-bold text-slate-900 tracking-tight">
+                  NeuroDesk · 产品决策工作台
+                </h1>
+                <p className="text-xs text-slate-500">
+                  成本利润测算 + AI 选品报告（内部使用）
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 text-xs">
+              <button
+                className={`px-3 py-1.5 rounded-full border ${
+                  activeTab === "profit"
+                    ? "bg-slate-900 text-white border-slate-900"
+                    : "bg-white text-slate-700 border-slate-200"
+                }`}
+                onClick={() => setActiveTab("profit")}
+              >
+                成本 & ROI 测算
+              </button>
+              <button
+                className={`px-3 py-1.5 rounded-full border ${
+                  activeTab === "ai"
+                    ? "bg-slate-900 text-white border-slate-900"
+                    : "bg-white text-slate-700 border-slate-200"
+                }`}
+                onClick={() => setActiveTab("ai")}
+              >
+                AI 选品报告
+              </button>
+            </div>
           </div>
         </div>
-      </div>
 
-      {/* 内容区域 */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {activeTab === "profit" ? <ProfitCalculator /> : <AiProductResearch />}
+        {/* 内容区域 */}
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+          {activeTab === "profit" ? (
+            <ProfitCalculator />
+          ) : (
+            <AiProductResearch />
+          )}
+        </div>
       </div>
-    </div>
+    </>
   );
 };
 
 export default App;
-
