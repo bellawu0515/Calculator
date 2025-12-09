@@ -1415,99 +1415,118 @@ const AiProductResearch: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [activeModuleKey, setActiveModuleKey] = useState<string>("1.1");
 
-  // 处理多文件上传（Excel / CSV），全部转成 CSV 文本
-  const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
-    const input = e.target;
-    const fileList = input.files;
-    if (!fileList || fileList.length === 0) return;
+// 处理多文件上传（Excel / CSV），全部转成 CSV 文本
+const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
+  const input = e.target;
+  const fileList = input.files;
+  if (!fileList || fileList.length === 0) return;
 
-    try {
-      const uploaded: UploadedFile[] = await Promise.all(
-        Array.from(fileList).map(
-          (file) =>
-            new Promise<UploadedFile>((resolve, reject) => {
-              const ext = file.name.split(".").pop()?.toLowerCase();
-              const reader = new FileReader();
+  try {
+    const uploaded: UploadedFile[] = await Promise.all(
+      Array.from(fileList).map(
+        (file) =>
+          new Promise<UploadedFile>((resolve, reject) => {
+            const ext = file.name.split(".").pop()?.toLowerCase();
+            const reader = new FileReader();
 
-              if (ext === "xlsx" || ext === "xls") {
-                // Excel → 读成 ArrayBuffer → 转 CSV
-                reader.onload = (evt) => {
-                  try {
-                    const data = evt.target?.result as ArrayBuffer;
-                    const wb = XLSX.read(data, { type: "array" });
-                    const firstSheetName = wb.SheetNames[0];
-                    const sheet = wb.Sheets[firstSheetName];
-                    const csv = XLSX.utils.sheet_to_csv(sheet);
-                    resolve({ name: file.name, content: csv });
-                  } catch (err) {
-                    reject(err);
-                  }
-                };
-                reader.onerror = () =>
-                  reject(reader.error || new Error("读取 Excel 失败"));
-                reader.readAsArrayBuffer(file);
-              } else {
-                // 普通 CSV / TXT 直接读文本
-                reader.onload = (evt) => {
-                  const text = (evt.target?.result as string) || "";
-                  resolve({ name: file.name, content: text });
-                };
-                reader.onerror = () =>
-                  reject(reader.error || new Error("读取文件失败"));
-                reader.readAsText(file, "utf-8");
-              }
-            })
-        )
-      );
+            if (ext === "xlsx" || ext === "xls") {
+              // Excel → 读成 ArrayBuffer → 转 CSV
+              reader.onload = (evt) => {
+                try {
+                  const data = evt.target?.result as ArrayBuffer;
+                  const wb = XLSX.read(data, { type: "array" });
+                  const firstSheetName = wb.SheetNames[0];
+                  const sheet = wb.Sheets[firstSheetName];
+                  const csv = XLSX.utils.sheet_to_csv(sheet);
+                  resolve({ name: file.name, content: csv });
+                } catch (err) {
+                  reject(err);
+                }
+              };
+              reader.onerror = () =>
+                reject(reader.error || new Error("读取 Excel 失败"));
+              reader.readAsArrayBuffer(file);
+            } else {
+              // 普通 CSV / TXT 直接读文本
+              reader.onload = (evt) => {
+                const text = (evt.target?.result as string) || "";
+                resolve({ name: file.name, content: text });
+              };
+              reader.onerror = () =>
+                reject(reader.error || new Error("读取文件失败"));
+              reader.readAsText(file, "utf-8");
+            }
+          })
+      )
+    );
 
-      setFiles(uploaded);
-      setResult(null);
-      setError(null);
-    } catch (err: any) {
-      console.error(err);
-      setError("解析报表失败，请检查文件格式（可上传 Excel 或 CSV）");
-    } finally {
-      input.value = "";
-    }
-  };
+    // ✅ 关键：在原有的 files 基础上追加，而不是覆盖
+    setFiles((prev) => {
+      const merged = [...prev];
 
-  const handleSubmit = async () => {
-    if (files.length === 0) {
-      setError("请先上传至少一个 Excel / CSV 报表。");
-      return;
-    }
-    setError(null);
-    setResult(null);
-    setLoading(true);
-
-    try {
-      const res = await fetch("/api/ai-product-research", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          csvList: files.map((f) => ({
-            name: f.name,
-            content: f.content,
-          })),
-          note,
-        }),
-      });
-
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(text || "AI 分析失败");
+      for (const f of uploaded) {
+        const idx = merged.findIndex((x) => x.name === f.name);
+        if (idx >= 0) {
+          // 同名文件：用最新的覆盖旧的
+          merged[idx] = f;
+        } else {
+          merged.push(f);
+        }
       }
 
-      const data = (await res.json()) as AiResult;
-      setResult(data);
-    } catch (err: any) {
-      setError(err.message || "请求失败");
-    } finally {
-      setLoading(false);
+      return merged;
+    });
+
+    setResult(null);
+    setError(null);
+  } catch (err: any) {
+    console.error(err);
+    setError("解析报表失败，请检查文件格式（可上传 Excel 或 CSV）");
+  } finally {
+    // 允许用户再次选择同一个文件
+    input.value = "";
+  }
+};
+
+
+  const handleSubmit = async () => {
+  if (files.length === 0) {
+    setError("请先上传至少一个 Excel / CSV 报表。");
+    return;
+  }
+  setError(null);
+  setResult(null);
+  setLoading(true);
+
+  try {
+    // 不要写死域名，直接用同源的相对路径
+    const res = await fetch("/api/ai-product-research", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        csvList: files.map((f) => ({
+          name: f.name,
+          content: f.content,
+        })),
+        note,
+      }),
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text || "AI 分析失败");
     }
-  };
+
+    const data = (await res.json()) as AiResult;
+    setResult(data);
+  } catch (err: any) {
+    setError(err.message || "请求失败");
+  } finally {
+    setLoading(false);
+  }
+};
 
   const renderMarkdown = (md: string) => {
     if (!md) {
