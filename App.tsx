@@ -6,7 +6,6 @@ import React, {
   ChangeEvent,
 } from "react";
 import * as XLSX from "xlsx";
-import * as echarts from "echarts";
 import ReactMarkdown from "react-markdown";
 
 // ============================================================================
