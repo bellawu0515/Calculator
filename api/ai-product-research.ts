@@ -178,7 +178,7 @@ ${snippet}
 
     const completion = await client.chat.completions.create({
       // 如果你的账号还没有 gpt-5，可以先用 gpt-4.1 或 gpt-4.1-mini
-      model: "gpt-5",
+      model: "gpt-4.1",
       response_format: { type: "json_object" },
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
