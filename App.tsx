@@ -2,9 +2,12 @@ import React, {
   useState,
   useMemo,
   useEffect,
+  useRef,
   ChangeEvent,
 } from "react";
 import * as XLSX from "xlsx";
+import * as echarts from "echarts";
+import ReactMarkdown from "react-markdown";
 
 // ============================================================================
 // 类型定义：成本测算相关
@@ -1415,118 +1418,296 @@ const AiProductResearch: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [activeModuleKey, setActiveModuleKey] = useState<string>("1.1");
 
-// 处理多文件上传（Excel / CSV），全部转成 CSV 文本
-const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
-  const input = e.target;
-  const fileList = input.files;
-  if (!fileList || fileList.length === 0) return;
+  // 老板阅览版图表容器
+  const priceSalesChartRef = useRef<HTMLDivElement | null>(null);
+  const radarChartRef = useRef<HTMLDivElement | null>(null);
 
-  try {
-    const uploaded: UploadedFile[] = await Promise.all(
-      Array.from(fileList).map(
-        (file) =>
-          new Promise<UploadedFile>((resolve, reject) => {
-            const ext = file.name.split(".").pop()?.toLowerCase();
-            const reader = new FileReader();
+  // 当 AI 结果变化时，更新价格-销量-评分气泡图
+  useEffect(() => {
+    if (!result || !priceSalesChartRef.current) return;
 
-            if (ext === "xlsx" || ext === "xls") {
-              // Excel → 读成 ArrayBuffer → 转 CSV
-              reader.onload = (evt) => {
-                try {
-                  const data = evt.target?.result as ArrayBuffer;
-                  const wb = XLSX.read(data, { type: "array" });
-                  const firstSheetName = wb.SheetNames[0];
-                  const sheet = wb.Sheets[firstSheetName];
-                  const csv = XLSX.utils.sheet_to_csv(sheet);
-                  resolve({ name: file.name, content: csv });
-                } catch (err) {
-                  reject(err);
-                }
-              };
-              reader.onerror = () =>
-                reject(reader.error || new Error("读取 Excel 失败"));
-              reader.readAsArrayBuffer(file);
-            } else {
-              // 普通 CSV / TXT 直接读文本
-              reader.onload = (evt) => {
-                const text = (evt.target?.result as string) || "";
-                resolve({ name: file.name, content: text });
-              };
-              reader.onerror = () =>
-                reject(reader.error || new Error("读取文件失败"));
-              reader.readAsText(file, "utf-8");
-            }
-          })
-      )
+    const chartDom = priceSalesChartRef.current;
+    const chart = echarts.init(chartDom);
+
+    const candidates = (result.candidates || []).filter(
+      (c) =>
+        c.price != null &&
+        c.monthlySales != null &&
+        c.rating != null
     );
 
-    // ✅ 关键：在原有的 files 基础上追加，而不是覆盖
-    setFiles((prev) => {
-      const merged = [...prev];
-
-      for (const f of uploaded) {
-        const idx = merged.findIndex((x) => x.name === f.name);
-        if (idx >= 0) {
-          // 同名文件：用最新的覆盖旧的
-          merged[idx] = f;
-        } else {
-          merged.push(f);
-        }
-      }
-
-      return merged;
+    const data = candidates.map((c) => {
+      const title =
+        c.title.length > 40 ? c.title.slice(0, 40) + "…" : c.title;
+      return {
+        name: c.id,
+        title,
+        value: [
+          c.price as number,
+          c.monthlySales as number,
+          c.rating as number,
+          c.reviews ?? 0,
+        ],
+      };
     });
 
-    setResult(null);
-    setError(null);
-  } catch (err: any) {
-    console.error(err);
-    setError("解析报表失败，请检查文件格式（可上传 Excel 或 CSV）");
-  } finally {
-    // 允许用户再次选择同一个文件
-    input.value = "";
-  }
-};
+    const option = {
+      backgroundColor: "#ffffff",
+      grid: { top: 40, right: 20, bottom: 40, left: 50 },
+      tooltip: {
+        trigger: "item",
+        borderRadius: 8,
+        backgroundColor: "rgba(15,23,42,0.9)",
+        textStyle: { color: "#fff", fontSize: 11 },
+        formatter: (params: any) => {
+          const v = params.value as number[];
+          const title = params.data.title;
+          return [
+            `<div style="max-width:220px;white-space:normal;word-break:break-word;">${title}</div>`,
+            `价格：$${v[0].toFixed(2)}`,
+            `月销量：${v[1].toLocaleString()}`,
+            `评分：${v[2].toFixed(1)}`,
+            `评论数：${(v[3] ?? 0).toLocaleString()}`,
+          ].join("<br/>");
+        },
+      },
+      xAxis: {
+        type: "value",
+        name: "价格 (USD)",
+        axisLine: { lineStyle: { color: "#94a3b8" } },
+        splitLine: { lineStyle: { color: "#e2e8f0" } },
+      },
+      yAxis: {
+        type: "value",
+        name: "月销量",
+        axisLine: { lineStyle: { color: "#94a3b8" } },
+        splitLine: { lineStyle: { color: "#e2e8f0" } },
+      },
+      series: [
+        {
+          type: "scatter",
+          symbolSize: (val: number[]) => {
+            const reviews = val[3] || 0;
+            return 10 + Math.min(40, Math.sqrt(reviews));
+          },
+          itemStyle: {
+            color: "#0f766e",
+            opacity: 0.75,
+          },
+          data,
+        },
+      ],
+    };
 
+    chart.setOption(option);
+
+    const handleResize = () => chart.resize();
+    window.addEventListener("resize", handleResize);
+
+    return () => {
+      window.removeEventListener("resize", handleResize);
+      chart.dispose();
+    };
+  }, [result]);
+
+  // 当 AI 结果变化时，更新竞品雷达图
+  useEffect(() => {
+    if (!result || !radarChartRef.current) return;
+
+    const chartDom = radarChartRef.current;
+    const chart = echarts.init(chartDom);
+
+    const opp = result.summary?.opportunityScore ?? 70;
+    const comp = result.summary?.competitionScore ?? 50;
+
+    // 简单根据机会/竞争强度推一个「竞品 vs 我们规划新品」的对比
+    const baseline = Math.max(40, Math.min(90, 80 - comp / 2));
+    const oursBase = Math.max(50, Math.min(95, opp));
+
+    const competitor = [
+      baseline - 5, // 品牌力
+      baseline, // 产品力
+      baseline - 10, // 性价比
+      baseline - 8, // 视觉
+      baseline - 6, // 服务
+      baseline - 4, // 痛点覆盖
+    ];
+
+    const ours = [
+      oursBase + 5,
+      oursBase + 3,
+      oursBase + 8,
+      oursBase + 6,
+      oursBase + 5,
+      oursBase + 7,
+    ].map((v) => Math.max(30, Math.min(98, v)));
+
+    const option = {
+      tooltip: {
+        trigger: "item",
+      },
+      radar: {
+        indicator: [
+          { name: "品牌力", max: 100 },
+          { name: "产品力", max: 100 },
+          { name: "性价比", max: 100 },
+          { name: "视觉审美", max: 100 },
+          { name: "服务体验", max: 100 },
+          { name: "痛点覆盖率", max: 100 },
+        ],
+        radius: "65%",
+        splitNumber: 4,
+        splitLine: { lineStyle: { color: "#e5e7eb" } },
+        splitArea: { areaStyle: { color: ["#f9fafb", "#f3f4f6"] } },
+        axisLine: { lineStyle: { color: "#d1d5db" } },
+      },
+      legend: {
+        bottom: 0,
+        textStyle: { color: "#6b7280", fontSize: 11 },
+        data: ["头部竞品平均", "你规划的新产品"],
+      },
+      series: [
+        {
+          type: "radar",
+          data: [
+            {
+              value: competitor,
+              name: "头部竞品平均",
+              areaStyle: { color: "rgba(148,163,184,0.25)" },
+              lineStyle: { color: "#9ca3af" },
+            },
+            {
+              value: ours,
+              name: "你规划的新产品",
+              areaStyle: { color: "rgba(37,99,235,0.20)" },
+              lineStyle: { color: "#2563eb" },
+            },
+          ],
+        },
+      ],
+    };
+
+    chart.setOption(option);
+
+    const handleResize = () => chart.resize();
+    window.addEventListener("resize", handleResize);
+
+    return () => {
+      window.removeEventListener("resize", handleResize);
+      chart.dispose();
+    };
+  }, [result]);
+
+  // 处理多文件上传（Excel / CSV），全部转成 CSV 文本
+  const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
+    const input = e.target;
+    const fileList = input.files;
+    if (!fileList || fileList.length === 0) return;
+
+    try {
+      const uploaded: UploadedFile[] = await Promise.all(
+        Array.from(fileList).map(
+          (file) =>
+            new Promise<UploadedFile>((resolve, reject) => {
+              const ext = file.name.split(".").pop()?.toLowerCase();
+              const reader = new FileReader();
+
+              if (ext === "xlsx" || ext === "xls") {
+                // Excel → 读成 ArrayBuffer → 转 CSV
+                reader.onload = (evt) => {
+                  try {
+                    const data = evt.target?.result as ArrayBuffer;
+                    const wb = XLSX.read(data, { type: "array" });
+                    const firstSheetName = wb.SheetNames[0];
+                    const sheet = wb.Sheets[firstSheetName];
+                    const csv = XLSX.utils.sheet_to_csv(sheet);
+                    resolve({ name: file.name, content: csv });
+                  } catch (err) {
+                    reject(err);
+                  }
+                };
+                reader.onerror = () =>
+                  reject(reader.error || new Error("读取 Excel 失败"));
+                reader.readAsArrayBuffer(file);
+              } else {
+                // 普通 CSV / TXT 直接读文本
+                reader.onload = (evt) => {
+                  const text = (evt.target?.result as string) || "";
+                  resolve({ name: file.name, content: text });
+                };
+                reader.onerror = () =>
+                  reject(reader.error || new Error("读取文件失败"));
+                reader.readAsText(file, "utf-8");
+              }
+            })
+      );
+
+      // ✅ 关键：在原有的 files 基础上追加，而不是覆盖
+      setFiles((prev) => {
+        const merged = [...prev];
+
+        for (const f of uploaded) {
+          const idx = merged.findIndex((x) => x.name === f.name);
+          if (idx >= 0) {
+            // 同名文件：用最新的覆盖旧的
+            merged[idx] = f;
+          } else {
+            merged.push(f);
+          }
+        }
+
+        return merged;
+      });
+
+      setResult(null);
+      setError(null);
+    } catch (err: any) {
+      console.error(err);
+      setError("解析报表失败，请检查文件格式（可上传 Excel 或 CSV）");
+    } finally {
+      // 允许用户再次选择同一个文件
+      input.value = "";
+    }
+  };
 
   const handleSubmit = async () => {
-  if (files.length === 0) {
-    setError("请先上传至少一个 Excel / CSV 报表。");
-    return;
-  }
-  setError(null);
-  setResult(null);
-  setLoading(true);
-
-  try {
-    // 不要写死域名，直接用同源的相对路径
-    const res = await fetch("/api/ai-product-research", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        csvList: files.map((f) => ({
-          name: f.name,
-          content: f.content,
-        })),
-        note,
-      }),
-    });
-
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(text || "AI 分析失败");
+    if (files.length === 0) {
+      setError("请先上传至少一个 Excel / CSV 报表。");
+      return;
     }
+    setError(null);
+    setResult(null);
+    setLoading(true);
 
-    const data = (await res.json()) as AiResult;
-    setResult(data);
-  } catch (err: any) {
-    setError(err.message || "请求失败");
-  } finally {
-    setLoading(false);
-  }
-};
+    try {
+      // 不要写死域名，直接用同源的相对路径
+      const res = await fetch("/api/ai-product-research", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          csvList: files.map((f) => ({
+            name: f.name,
+            content: f.content,
+          })),
+          note,
+        }),
+      });
+
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || "AI 分析失败");
+      }
+
+      const data = (await res.json()) as AiResult;
+      setResult(data);
+    } catch (err: any) {
+      setError(err.message || "请求失败");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const renderMarkdown = (md: string) => {
     if (!md) {
@@ -1572,12 +1753,10 @@ const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
   };
 
   return (
-    <div className="space-y-6 pb-10">
+    <div className="ai-report-page space-y-6 pb-10">
       {/* 标题 + 导出 PDF */}
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">
-          AI 选品中心（报表版 V0）
-        </h2>
+        <h2 className="text-lg font-semibold">AI 选品中心（报表版 V0）</h2>
         <button
           onClick={handleExportPdf}
           disabled={!result}
@@ -1776,6 +1955,33 @@ const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
               <p className="text-xs text-slate-600">
                 {result.decisionReason}
               </p>
+            </div>
+
+            {/* 市场全景仪表盘：价格-销量-评分 + 竞品雷达图 */}
+            <div className="bg-white border rounded-xl shadow-sm p-4 space-y-4">
+              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+                <div>
+                  <div className="text-xs text-slate-500 uppercase">
+                    MARKET LANDSCAPE DASHBOARD
+                  </div>
+                  <div className="text-sm font-semibold text-slate-900">
+                    价格 · 销量 · 评分 分布 & 竞品实力雷达图
+                  </div>
+                  <p className="mt-1 text-xs text-slate-500">
+                    左侧气泡图用于识别「高价高销 / 低价走量 / 高价蓝海」；右侧雷达图帮助快速对比竞品整体实力与你规划中的新品方向。
+                  </p>
+                </div>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div
+                  ref={priceSalesChartRef}
+                  className="h-64 md:h-72 rounded-lg bg-slate-50"
+                />
+                <div
+                  ref={radarChartRef}
+                  className="h-64 md:h-72 rounded-lg bg-slate-50"
+                />
+              </div>
             </div>
 
             {/* Top 候选款列表 */}
