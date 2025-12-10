@@ -1598,49 +1598,50 @@ const AiProductResearch: React.FC = () => {
     };
   }, [result]);
 
-  // 处理多文件上传（Excel / CSV），全部转成 CSV 文本
-  const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
-    const input = e.target;
-    const fileList = input.files;
-    if (!fileList || fileList.length === 0) return;
+// 处理多文件上传（Excel / CSV），全部转成 CSV 文本
+const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
+  const input = e.target;
+  const fileList = input.files;
+  if (!fileList || fileList.length === 0) return;
 
-    try {
-      const uploaded: UploadedFile[] = await Promise.all(
-        Array.from(fileList).map(
-          (file) =>
-            new Promise<UploadedFile>((resolve, reject) => {
-              const ext = file.name.split(".").pop()?.toLowerCase();
-              const reader = new FileReader();
+  try {
+    const uploaded: UploadedFile[] = await Promise.all(
+      Array.from(fileList).map(
+        (file) =>
+          new Promise<UploadedFile>((resolve, reject) => {
+            const ext = file.name.split(".").pop()?.toLowerCase();
+            const reader = new FileReader();
 
-              if (ext === "xlsx" || ext === "xls") {
-                // Excel → 读成 ArrayBuffer → 转 CSV
-                reader.onload = (evt) => {
-                  try {
-                    const data = evt.target?.result as ArrayBuffer;
-                    const wb = XLSX.read(data, { type: "array" });
-                    const firstSheetName = wb.SheetNames[0];
-                    const sheet = wb.Sheets[firstSheetName];
-                    const csv = XLSX.utils.sheet_to_csv(sheet);
-                    resolve({ name: file.name, content: csv });
-                  } catch (err) {
-                    reject(err);
-                  }
-                };
-                reader.onerror = () =>
-                  reject(reader.error || new Error("读取 Excel 失败"));
-                reader.readAsArrayBuffer(file);
-              } else {
-                // 普通 CSV / TXT 直接读文本
-                reader.onload = (evt) => {
-                  const text = (evt.target?.result as string) || "";
-                  resolve({ name: file.name, content: text });
-                };
-                reader.onerror = () =>
-                  reject(reader.error || new Error("读取文件失败"));
-                reader.readAsText(file, "utf-8");
-              }
-            })
-      );
+            if (ext === "xlsx" || ext === "xls") {
+              // Excel → 读成 ArrayBuffer → 转 CSV
+              reader.onload = (evt) => {
+                try {
+                  const data = evt.target?.result as ArrayBuffer;
+                  const wb = XLSX.read(data, { type: "array" });
+                  const firstSheetName = wb.SheetNames[0];
+                  const sheet = wb.Sheets[firstSheetName];
+                  const csv = XLSX.utils.sheet_to_csv(sheet);
+                  resolve({ name: file.name, content: csv });
+                } catch (err) {
+                  reject(err);
+                }
+              };
+              reader.onerror = () =>
+                reject(reader.error || new Error("读取 Excel 失败"));
+              reader.readAsArrayBuffer(file);
+            } else {
+              // 普通 CSV / TXT 直接读文本
+              reader.onload = (evt) => {
+                const text = (evt.target?.result as string) || "";
+                resolve({ name: file.name, content: text });
+              };
+              reader.onerror = () =>
+                reject(reader.error || new Error("读取文件失败"));
+              reader.readAsText(file, "utf-8");
+            }
+          })
+      )
+    );
 
       // ✅ 关键：在原有的 files 基础上追加，而不是覆盖
       setFiles((prev) => {
