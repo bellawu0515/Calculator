@@ -2,20 +2,30 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import OpenAI from "openai";
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
-// 统一设置 CORS 头
+// -------- 统一 CORS 头 --------
 function setCorsHeaders(res: VercelResponse) {
-  // 如果以后只从某个域名调用，可以改成具体域名，比如：
+  // 如果以后只从某个域名调用，可以改成具体域名
   // res.setHeader("Access-Control-Allow-Origin", "https://www.neurodesktech.com");
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
 
-// 让模型直接产出前端需要的 AiResult 结构
+// -------- 懒加载 OpenAI 客户端，避免顶层报错 --------
+let openaiClient: OpenAI | null = null;
+
+function getOpenAIClient() {
+  if (!openaiClient) {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      throw new Error("MISSING_OPENAI_API_KEY");
+    }
+    openaiClient = new OpenAI({ apiKey });
+  }
+  return openaiClient;
+}
+
+// -------- System Prompt --------
 const SYSTEM_PROMPT = `
 你是一位拥有 8 年以上经验的跨境电商选品总监，长期负责 Amazon / TikTok / Temu 等平台的新品立项与市场研究。
 
@@ -109,7 +119,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // 每个请求先打上 CORS 头
   setCorsHeaders(res);
 
-  // 处理预检请求
+  // 预检请求
   if (req.method === "OPTIONS") {
     res.status(200).end();
     return;
@@ -121,6 +131,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
+    const client = getOpenAIClient(); // 这里才真正 new OpenAI
+
     const { csvText, note, csvList } = req.body as {
       csvText?: string;
       note?: string;
@@ -164,8 +176,9 @@ ${snippet}
 ===== 报表文本结束 =====
     `.trim();
 
-    const completion = await openai.chat.completions.create({
-      model: "gpt-5",
+    const completion = await client.chat.completions.create({
+      // 如果你的账号还没有 gpt-5，可以先用 gpt-4.1 或 gpt-4.1-mini
+      model: "gpt-4.1-mini",
       response_format: { type: "json_object" },
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
@@ -191,6 +204,14 @@ ${snippet}
     res.status(200).json(json);
   } catch (error: any) {
     console.error("AI product research error:", error);
+
+    if (error?.message === "MISSING_OPENAI_API_KEY") {
+      res.status(500).json({
+        error: "服务端缺少 OPENAI_API_KEY 环境变量，请在 Vercel 项目中配置。",
+      });
+      return;
+    }
+
     res.status(500).json({
       error: "Failed to generate AI report",
       detail: error?.message ?? String(error),
