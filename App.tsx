@@ -7,6 +7,7 @@ import React, {
 } from "react";
 import * as XLSX from "xlsx";
 import ReactMarkdown from "react-markdown";
+import * as echarts from "echarts";
 
 // ============================================================================
 // 类型定义：成本测算相关
@@ -1597,52 +1598,52 @@ const AiProductResearch: React.FC = () => {
     };
   }, [result]);
 
-// 处理多文件上传（Excel / CSV），全部转成 CSV 文本
-const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
-  const input = e.target;
-  const fileList = input.files;
-  if (!fileList || fileList.length === 0) return;
+  // 处理多文件上传（Excel / CSV），全部转成 CSV 文本
+  const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
+    const input = e.target;
+    const fileList = input.files;
+    if (!fileList || fileList.length === 0) return;
 
-  try {
-    const uploaded: UploadedFile[] = await Promise.all(
-      Array.from(fileList).map(
-        (file) =>
-          new Promise<UploadedFile>((resolve, reject) => {
-            const ext = file.name.split(".").pop()?.toLowerCase();
-            const reader = new FileReader();
+    try {
+      const uploaded: UploadedFile[] = await Promise.all(
+        Array.from(fileList).map(
+          (file) =>
+            new Promise<UploadedFile>((resolve, reject) => {
+              const ext = file.name.split(".").pop()?.toLowerCase();
+              const reader = new FileReader();
 
-            if (ext === "xlsx" || ext === "xls") {
-              // Excel → 读成 ArrayBuffer → 转 CSV
-              reader.onload = (evt) => {
-                try {
-                  const data = evt.target?.result as ArrayBuffer;
-                  const wb = XLSX.read(data, { type: "array" });
-                  const firstSheetName = wb.SheetNames[0];
-                  const sheet = wb.Sheets[firstSheetName];
-                  const csv = XLSX.utils.sheet_to_csv(sheet);
-                  resolve({ name: file.name, content: csv });
-                } catch (err) {
-                  reject(err);
-                }
-              };
-              reader.onerror = () =>
-                reject(reader.error || new Error("读取 Excel 失败"));
-              reader.readAsArrayBuffer(file);
-            } else {
-              // 普通 CSV / TXT 直接读文本
-              reader.onload = (evt) => {
-                const text = (evt.target?.result as string) || "";
-                resolve({ name: file.name, content: text });
-              };
-              reader.onerror = () =>
-                reject(reader.error || new Error("读取文件失败"));
-              reader.readAsText(file, "utf-8");
-            }
-          })
-      )
-    );
+              if (ext === "xlsx" || ext === "xls") {
+                // Excel → 读成 ArrayBuffer → 转 CSV
+                reader.onload = (evt) => {
+                  try {
+                    const data = evt.target?.result as ArrayBuffer;
+                    const wb = XLSX.read(data, { type: "array" });
+                    const firstSheetName = wb.SheetNames[0];
+                    const sheet = wb.Sheets[firstSheetName];
+                    const csv = XLSX.utils.sheet_to_csv(sheet);
+                    resolve({ name: file.name, content: csv });
+                  } catch (err) {
+                    reject(err);
+                  }
+                };
+                reader.onerror = () =>
+                  reject(reader.error || new Error("读取 Excel 失败"));
+                reader.readAsArrayBuffer(file);
+              } else {
+                // 普通 CSV / TXT 直接读文本
+                reader.onload = (evt) => {
+                  const text = (evt.target?.result as string) || "";
+                  resolve({ name: file.name, content: text });
+                };
+                reader.onerror = () =>
+                  reject(reader.error || new Error("读取文件失败"));
+                reader.readAsText(file, "utf-8");
+              }
+            })
+        )
+      );
 
-      // ✅ 关键：在原有的 files 基础上追加，而不是覆盖
+      // 在原有的 files 基础上追加，而不是覆盖
       setFiles((prev) => {
         const merged = [...prev];
 
@@ -1687,9 +1688,9 @@ const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
         body: JSON.stringify({
           csvList: files.map((f) => ({
             name: f.name,
-            content: f.text,
+            content: f.content, // ✅ 用 content 字段
           })),
-          note: sceneNote,
+          note, // ✅ 直接传 note 状态
         }),
       });
 
@@ -1700,7 +1701,7 @@ const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
       }
 
       const data: AiResult = await response.json();
-      setAiResult(data);
+      setResult(data); // ✅ 使用 setResult
     } catch (err: any) {
       console.error("fetch ai-product-research error:", err);
       setError(err?.message || "请求失败，请稍后重试");
@@ -1708,7 +1709,6 @@ const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
       setLoading(false);
     }
   };
-
 
   const renderMarkdown = (md: string) => {
     if (!md) {
@@ -1761,7 +1761,7 @@ const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
         <button
           onClick={handleExportPdf}
           disabled={!result}
-          className="rounded-full border border-slate-300 px-4 py-1.5 text-xs bg-white hover:bg-slate-50 disabled:opacity-40"
+          className="rounded-full border border-slate-300 px-4 py-1.5 text-xs bg白 hover:bg-slate-50 disabled:opacity-40"
         >
           导出 PDF
         </button>
@@ -2169,7 +2169,7 @@ const App: React.FC = () => {
                 className={`px-3 py-1.5 rounded-full border ${
                   activeTab === "ai"
                     ? "bg-slate-900 text-white border-slate-900"
-                    : "bg-white text-slate-700 border-slate-200"
+                    : "bg白 text-slate-700 border-slate-200"
                 }`}
                 onClick={() => setActiveTab("ai")}
               >
