@@ -1689,7 +1689,7 @@ const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
             name: f.name,
             content: f.text,
           })),
-          note: remark,
+          note: sceneNote,
         }),
       });
 
