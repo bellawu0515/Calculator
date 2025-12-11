@@ -1430,10 +1430,7 @@ const AiProductResearch: React.FC = () => {
     const chart = echarts.init(chartDom);
 
     const candidates = (result.candidates || []).filter(
-      (c) =>
-        c.price != null &&
-        c.monthlySales != null &&
-        c.rating != null
+      (c) => c.price != null && c.monthlySales != null && c.rating != null
     );
 
     const data = candidates.map((c) => {
@@ -1461,9 +1458,9 @@ const AiProductResearch: React.FC = () => {
         textStyle: { color: "#fff", fontSize: 11 },
         formatter: (params: any) => {
           const v = params.value as number[];
-          const title = params.data.title;
+          const titleText = params.data.title;
           return [
-            `<div style="max-width:220px;white-space:normal;word-break:break-word;">${title}</div>`,
+            `<div style="max-width:220px;white-space:normal;word-break:break-word;">${titleText}</div>`,
             `价格：$${v[0].toFixed(2)}`,
             `月销量：${v[1].toLocaleString()}`,
             `评分：${v[2].toFixed(1)}`,
@@ -1643,7 +1640,7 @@ const AiProductResearch: React.FC = () => {
         )
       );
 
-      // 在原有的 files 基础上追加，而不是覆盖
+      // ✅ 关键：在原有的 files 基础上追加，而不是覆盖
       setFiles((prev) => {
         const merged = [...prev];
 
@@ -1688,9 +1685,11 @@ const AiProductResearch: React.FC = () => {
         body: JSON.stringify({
           csvList: files.map((f) => ({
             name: f.name,
-            content: f.content, // ✅ 用 content 字段
+            // ✅ 这里用 content，而不是 text
+            content: f.content,
           })),
-          note, // ✅ 直接传 note 状态
+          // ✅ 使用 note 这个 state，而不是未定义的 sceneNote
+          note,
         }),
       });
 
@@ -1701,7 +1700,8 @@ const AiProductResearch: React.FC = () => {
       }
 
       const data: AiResult = await response.json();
-      setResult(data); // ✅ 使用 setResult
+      // ✅ 正确更新 result
+      setResult(data);
     } catch (err: any) {
       console.error("fetch ai-product-research error:", err);
       setError(err?.message || "请求失败，请稍后重试");
@@ -1720,9 +1720,9 @@ const AiProductResearch: React.FC = () => {
       );
     }
     return (
-      <pre className="whitespace-pre-wrap text-xs md:text-sm font-sans bg-slate-50 p-3 rounded-lg border border-slate-100">
-        {md}
-      </pre>
+      <div className="prose prose-sm max-w-none text-slate-800">
+        <ReactMarkdown>{md}</ReactMarkdown>
+      </div>
     );
   };
 
@@ -1761,7 +1761,7 @@ const AiProductResearch: React.FC = () => {
         <button
           onClick={handleExportPdf}
           disabled={!result}
-          className="rounded-full border border-slate-300 px-4 py-1.5 text-xs bg白 hover:bg-slate-50 disabled:opacity-40"
+          className="rounded-full border border-slate-300 px-4 py-1.5 text-xs bg-white hover:bg-slate-50 disabled:opacity-40"
         >
           导出 PDF
         </button>
@@ -2169,7 +2169,7 @@ const App: React.FC = () => {
                 className={`px-3 py-1.5 rounded-full border ${
                   activeTab === "ai"
                     ? "bg-slate-900 text-white border-slate-900"
-                    : "bg白 text-slate-700 border-slate-200"
+                    : "bg-white text-slate-700 border-slate-200"
                 }`}
                 onClick={() => setActiveTab("ai")}
               >
