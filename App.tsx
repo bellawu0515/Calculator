@@ -1675,39 +1675,40 @@ const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
       setError("请先上传至少一个 Excel / CSV 报表。");
       return;
     }
+
     setError(null);
     setResult(null);
     setLoading(true);
 
     try {
-      // 不要写死域名，直接用同源的相对路径
-      const res = await fetch("/api/ai-product-research", {
+      const response = await fetch("/api/ai-product-research", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           csvList: files.map((f) => ({
             name: f.name,
-            content: f.content,
+            content: f.text,
           })),
-          note,
+          note: remark,
         }),
       });
 
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(text || "AI 分析失败");
+      if (!response.ok) {
+        const text = await response.text();
+        console.error("API error response:", response.status, text);
+        throw new Error(`HTTP ${response.status}: ${text}`);
       }
 
-      const data = (await res.json()) as AiResult;
-      setResult(data);
+      const data: AiResult = await response.json();
+      setAiResult(data);
     } catch (err: any) {
-      setError(err.message || "请求失败");
+      console.error("fetch ai-product-research error:", err);
+      setError(err?.message || "请求失败，请稍后重试");
     } finally {
       setLoading(false);
     }
   };
+
 
   const renderMarkdown = (md: string) => {
     if (!md) {
